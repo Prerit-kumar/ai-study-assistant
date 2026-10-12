@@ -1,0 +1,18 @@
+{
+  "base_answer": {
+    "correct": 0.64,
+    "partial": 0.22,
+    "incorrect": 0.1,
+    "wrongly_refused": 0.04,
+    "correctly_refused": 0.86,
+    "hallucinated": 0.14
+  },
+  "finetuned_answer": {
+    "correct": 0.71,
+    "partial": 0.18,
+    "incorrect": 0.08,
+    "wrongly_refused": 0.03,
+    "correctly_refused": 0.92,
+    "hallucinated": 0.07999999999999996
+  }
+}

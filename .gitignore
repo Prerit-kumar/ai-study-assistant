@@ -1,0 +1,11 @@
+venv/
+.env
+__pycache__/
+chroma_db/
+data/
+papers/
+llm_cache/
+finetune_data/
+src/compare_eval_*.json
+LPNN_DEMO.ipynb
+node_modules/
