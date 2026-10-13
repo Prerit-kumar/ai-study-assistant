@@ -1,7 +1,3 @@
-:root {
-  color-scheme: light dark;
-}
-
-#root {
-  width: 100%;
-}
+:root { color-scheme: dark; }
+html, body { background: #090c14; }
+#root { width: 100%; }

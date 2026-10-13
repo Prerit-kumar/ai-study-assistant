@@ -1,4 +1,4 @@
-# Shelfwise
+# Study Assistant AI
 
 **An AI study assistant for research papers.** Upload research papers, ask questions with cited sources, and compare dozens of papers in a single table. Built as an end-to-end GenAI project: retrieval-augmented generation, a map-reduce comparison pipeline with its own benchmark, and a QLoRA fine-tuning experiment on a 6 GB laptop GPU in which a local 3B model hallucinates less than gpt-4o-mini.
 
@@ -16,6 +16,7 @@
 | **Clear failures** | If an OpenAI call fails (no credits, rate limit), the user sees a plain message. Partial or silently incomplete tables are never shown. |
 | **Safe uploads** | Only real PDFs (checked by file signature) up to 25 MB are accepted; file names are sanitized and PDFs without extractable text are rejected. CORS is limited to the app's own frontend. |
 | **Bookshelf interface** | Papers sit on a 3D bookshelf grouped by topic. Hover pulls a book out, clicking picks it for comparison, and after every answer the papers it came from light up on the shelf. Built with CSS 3D transforms only, and it respects reduced-motion settings. |
+| **Rate limits** | Per-IP limits (Ask 10/min, Compare 3/min, uploads 10/hour) plus global daily caps, so a public demo can't run up the OpenAI bill. |
 | **Cost control** | Every LLM response is cached on disk, prompts are ordered for OpenAI prompt caching, and each comparison logs its estimated cost. |
 
 ---
@@ -141,7 +142,7 @@ The earlier v1-only benchmark (single-chunk contexts) is in `finetune/benchmark_
 - **Numbers that live in tables** can still be missed or attributed to the wrong model when retrieval doesn't surface the right chunk.
 - **The trap question doesn't pass every run.** The selector occasionally picks loosely related papers when nothing fits.
 - **Borderline papers are not always selected.** GPT-3, whose abstract is mostly about few-shot prompting, is sometimes skipped for questions about model size.
-- **No rate limiting yet:** a public deployment needs per-user limits so nobody can run up the OpenAI bill.
+- **Rate limits are in memory:** they reset when the server restarts and are not shared across multiple server instances.
 
 ---
 
@@ -210,4 +211,4 @@ Run the comparison benchmark with `python compare_eval.py` from `src/`. Cached r
 - Serve the fine-tuned v2 model as a free, local option for Ask mode
 - Harder Ask-mode benchmark: questions that don't name the paper, table facts, multi-paper questions
 - Document filter in Ask mode and a summarization feature
-- Rate limiting and deployment
+- Public deployment (backend on Hugging Face Spaces, frontend on Vercel)
