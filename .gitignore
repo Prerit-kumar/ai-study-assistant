@@ -6,6 +6,7 @@ data/
 papers/
 llm_cache/
 finetune_data/
+finetune_data_v2/
 src/compare_eval_*.json
 LPNN_DEMO.ipynb
 node_modules/

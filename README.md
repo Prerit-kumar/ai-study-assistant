@@ -1,6 +1,6 @@
-# AI Study Assistant
+# Shelfwise
 
-Upload research papers, ask questions with cited sources, and compare dozens of papers in a single table. Built as an end-to-end GenAI project: retrieval-augmented generation, a map-reduce comparison pipeline with its own benchmark, and a QLoRA fine-tuning experiment on a 6 GB laptop GPU.
+**An AI study assistant for research papers.** Upload research papers, ask questions with cited sources, and compare dozens of papers in a single table. Built as an end-to-end GenAI project: retrieval-augmented generation, a map-reduce comparison pipeline with its own benchmark, and a QLoRA fine-tuning experiment on a 6 GB laptop GPU in which a local 3B model hallucinates less than gpt-4o-mini.
 
 **Stack:** Python, FastAPI, React (Vite), ChromaDB, sentence-transformers, BM25 + cross-encoder reranking, OpenAI API (gpt-4o-mini / gpt-4o), Unsloth + QLoRA (Llama-3.2-3B).
 
@@ -15,6 +15,7 @@ Upload research papers, ask questions with cited sources, and compare dozens of 
 | **Compare** | Ask one question across 2–50 papers and get a markdown table, one row per relevant paper, plus notes explaining which papers were left out and why. |
 | **Clear failures** | If an OpenAI call fails (no credits, rate limit), the user sees a plain message. Partial or silently incomplete tables are never shown. |
 | **Safe uploads** | Only real PDFs (checked by file signature) up to 25 MB are accepted; file names are sanitized and PDFs without extractable text are rejected. CORS is limited to the app's own frontend. |
+| **Bookshelf interface** | Papers sit on a 3D bookshelf grouped by topic. Hover pulls a book out, clicking picks it for comparison, and after every answer the papers it came from light up on the shelf. Built with CSS 3D transforms only, and it respects reduced-motion settings. |
 | **Cost control** | Every LLM response is cached on disk, prompts are ordered for OpenAI prompt caching, and each comparison logs its estimated cost. |
 
 ---
@@ -98,36 +99,49 @@ Five fixed questions over the 40-paper corpus, each with expected papers and num
 
 ### Fine-tuning experiment (`finetune/`)
 
-**Question:** can a small local model learn to answer from context and refuse when the answer isn't there?
+**Question:** can a small local model answer from retrieved context, cite the chunk it used, and refuse when the answer isn't there?
 
-- **Model:** Llama-3.2-3B-Instruct (4-bit) with QLoRA (rank 16), trained with Unsloth on an **RTX 3060 Laptop GPU (6 GB)**
-- **Data:** 1,041 question–context–answer examples generated from arXiv papers, including unanswerable questions. Split by paper (936 train / 105 validation) so the same paper never appears in both.
-- **Training:** 2 epochs, LR 1e-4, ~41 minutes, peak VRAM **4.5 GB**, final train loss 0.30, validation loss 0.19
-- **Judging:** gpt-4o-mini as an LLM judge on a held-out test set
+**Setup:** Llama-3.2-3B-Instruct (4-bit) with QLoRA (rank 16) via Unsloth, trained on an **RTX 3060 Laptop GPU (6 GB)**, peak VRAM 4.5 GB.
 
-| Metric | Base model | Fine-tuned | Change |
-|---|---|---|---|
-| Correct answers | 64% | **71%** | +7 pts |
-| Partially correct | 22% | 18% | −4 pts |
-| Incorrect | 10% | 8% | −2 pts |
-| Wrongly refused (answer was in context) | 4% | 3% | −1 pt |
-| Correctly refused (answer not in context) | 86% | **92%** | +6 pts |
-| Hallucinated (answered when it should refuse) | 14% | **8%** | −6 pts |
+| | v1 | v2 |
+|---|---|---|
+| Training data | 1,041 examples, one context chunk each; text had glued words; ~32% cut off by the 2,048-token limit | 2,097 examples built like the real app: 5 numbered chunks from our own retrieval (vector search + reranker), with distractors; ~7% dropped as too long |
+| Unanswerable examples | question and context from the same chunk | a real question about paper X, with context only from *other* papers |
+| Target format | plain answer | answer + `USED_CHUNKS: n` (the citation format the app parses) |
+| Training | 2 epochs, 41 min | 1 epoch, 72 min |
 
-**Takeaway:** the fine-tuned 3B model answers more questions correctly and hallucinates less often on unanswerable questions, without becoming more refusal-happy.
+**Benchmark v2:** 150 questions (100 answerable, 50 unanswerable) from 5 papers that were never used in training. The same prompt goes to every model, gpt-4o-mini judges correctness, and citations are checked in code against the chunk that holds the answer.
+
+| Metric | Base 3B | Fine-tuned v1 | **Fine-tuned v2** | gpt-4o-mini |
+|---|---|---|---|---|
+| Correct | 43% | 61% | 56% | 62% |
+| Partially correct | 48% | 34% | 33% | 28% |
+| Incorrect | 8% | 4% | 4% | 2% |
+| Wrongly refused | 1% | 1% | 7% | 8% |
+| Correctly refused | 66% | 66% | **92%** | 74% |
+| **Hallucinated** | 34% | 34% | **8%** | 26% |
+| **Citation accuracy** | 45% | 1% | **85%** | 81% |
+| Median latency | 2.4 s | 2.7 s | 2.7 s | API |
+
+**Takeaways**
+
+- **v2 hallucinates on 8% of unanswerable questions, against 26% for gpt-4o-mini and 34% for the base model,** and it cites the right chunk more often than gpt-4o-mini (85% vs 81%), while running locally for free.
+- It is about 6 points behind gpt-4o-mini on fully correct answers and refuses slightly more often when the answer *is* there (7%). The model became more cautious; that is the trade-off.
+- **v1 looked good on its own easy test (8% hallucination) but hallucinates 34% of the time once the context contains realistic distractors.** It also never learned the citation format. Evaluating in conditions that match real use changed the conclusion.
+- The test set is small (100 + 50 questions), so differences of a few points are within noise. The hallucination and citation gaps are large enough to matter.
+
+The earlier v1-only benchmark (single-chunk contexts) is in `finetune/benchmark_results.json`.
 
 ---
 
 ## Known limitations
 
 - **Small fine-tuning test set:** differences of a few percentage points may be noise.
-- **Truncation during training:** examples longer than 2,048 tokens were cut, which dropped about 32% of the training examples. A v2 with shorter chunks and a longer sequence length is planned.
-- **The fine-tuned model is an experiment.** The app currently uses the OpenAI API for answers.
+- **The fine-tuned model is not served by the app yet.** The app uses the OpenAI API; plugging in the local v2 model is the next step.
 - **Numbers that live in tables** can still be missed or attributed to the wrong model when retrieval doesn't surface the right chunk.
 - **The trap question doesn't pass every run.** The selector occasionally picks loosely related papers when nothing fits.
 - **Borderline papers are not always selected.** GPT-3, whose abstract is mostly about few-shot prompting, is sometimes skipped for questions about model size.
 - **No rate limiting yet:** a public deployment needs per-user limits so nobody can run up the OpenAI bill.
-- **Fine-tuning data was generated before the text-extraction fix,** so some training contexts contain glued words. v2 will regenerate the data.
 
 ---
 
@@ -146,9 +160,11 @@ ai-study-assistant/
 │   ├── comparison.py      # Compare: select → extract → table, with cache + cost log
 │   ├── compare_eval.py    # comparison benchmark
 │   ├── evaluation.py      # Ask-mode evaluation
-│   ├── make_dataset.py    # fine-tuning dataset generation
-│   └── eval_judge.py      # LLM-as-judge for the fine-tuning benchmark
-├── finetune/              # QLoRA training + generation scripts
+│   ├── make_dataset.py    # fine-tuning dataset v1
+│   ├── make_dataset_v2.py # fine-tuning dataset v2 (realistic retrieval contexts)
+│   ├── eval_judge.py      # LLM-as-judge for the v1 benchmark
+│   └── eval_judge_v2.py   # base vs v1 vs v2 vs gpt-4o-mini benchmark
+├── finetune/              # QLoRA training (train.py, train_v2.py) and generation scripts
 └── frontend/              # React UI
 ```
 
@@ -191,7 +207,7 @@ Run the comparison benchmark with `python compare_eval.py` from `src/`. Cached r
 
 ## Roadmap
 
-- Fine-tuning v2: shorter chunks, ~2,500–3,000 examples, longer sequence length; compare base vs v1 vs v2
+- Serve the fine-tuned v2 model as a free, local option for Ask mode
 - Harder Ask-mode benchmark: questions that don't name the paper, table facts, multi-paper questions
 - Document filter in Ask mode and a summarization feature
 - Rate limiting and deployment

@@ -1,0 +1,26 @@
+{
+  "base_model": "unsloth/Llama-3.2-3B-Instruct-bnb-4bit",
+  "training_examples": 1857,
+  "validation_examples": 240,
+  "epochs_requested": 1,
+  "learning_rate": 0.0001,
+  "lora_rank": 16,
+  "max_seq_length": 2048,
+  "training_time_minutes": 72.34,
+  "peak_allocated_vram_gb": 4.51,
+  "train_metrics": {
+    "train_runtime": 4338.9905,
+    "train_samples_per_second": 0.397,
+    "train_steps_per_second": 0.05,
+    "total_flos": 4.82493024475607e+16,
+    "train_loss": 0.31783622282522694,
+    "epoch": 1.0
+  },
+  "eval_metrics": {
+    "eval_loss": 0.23123587667942047,
+    "eval_runtime": 172.8057,
+    "eval_samples_per_second": 1.302,
+    "eval_steps_per_second": 1.302,
+    "epoch": 1.0
+  }
+}
