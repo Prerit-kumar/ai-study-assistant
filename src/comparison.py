@@ -18,8 +18,8 @@ CHAT_MODEL = "gpt-4o-mini"
 SELECT_MODEL = "gpt-4o"        # stronger model only for the paper-selection call
 
 DIRECT_LIMIT = 8               # up to this many docs: single prompt
-DIRECT_CHUNKS_PER_DOC = 6
-EXTRACT_CHUNKS_PER_DOC = 5
+DIRECT_CHUNKS_PER_DOC = 10
+EXTRACT_CHUNKS_PER_DOC = 10
 PROFILE_WORDS = 350            # opening words of each paper (title + abstract) used for selection
 SELECT_BATCH = 25              # papers per selection call
 MAX_SELECTED = 15              # max rows in the final table
@@ -234,7 +234,7 @@ def _load_doc(doc):
 
 def _profile(chunks, words=PROFILE_WORDS):
     """The opening of the paper: usually title + abstract."""
-    return " ".join(" ".join(chunks[:2]).split()[:words])
+    return " ".join(" ".join(chunks[:3]).split()[:words])
 
 
 def _top_chunks(chunks, emb, query_vec, k):

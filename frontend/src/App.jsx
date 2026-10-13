@@ -3,11 +3,16 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 const API = "http://127.0.0.1:8000";
+const MAX_QUESTION_LENGTH = 2000;
 
 const css = `
   .title { margin: 0 0 4px; font-size: 30px; }
   .subtitle { color: #9aa3b5; margin: 0 0 24px; }
   .muted { color: #9aa3b5; font-size: 14px; margin: 8px 0; }
+  .status { font-size: 14px; margin: 8px 0; }
+  .status.ok { color: #6fdc8c; }
+  .status.err { color: #ff7b7b; }
+  .status.info { color: #9aa3b5; }
   .card { background: #181b24; border: 1px solid #2a2f3d; border-radius: 12px; padding: 18px; margin-bottom: 18px; }
   .card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
   .link { background: none; border: none; color: #7f9bff; cursor: pointer; font-size: 14px; margin-left: 12px; }
@@ -24,6 +29,7 @@ const css = `
   .btn:hover { background: #6280ff; }
   .btn:disabled { opacity: 0.6; cursor: not-allowed; }
   .answer { overflow-x: auto; line-height: 1.6; }
+  .answer.error { color: #ff7b7b; }
   .answer table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 14px; }
   .answer th, .answer td { border: 1px solid #3a4152; padding: 8px; text-align: left; vertical-align: top; }
   .answer th { background: #252a38; }
@@ -31,22 +37,41 @@ const css = `
   .chip { background: #252a38; border: 1px solid #3a4152; border-radius: 999px; padding: 3px 12px; color: #e6e6e6; }
 `;
 
+// Turns a FastAPI error response into a readable message.
+// "detail" is a string for our own errors and a list for validation errors.
+async function errorMessage(response) {
+  try {
+    const data = await response.json();
+    if (typeof data.detail === "string") return data.detail;
+    if (Array.isArray(data.detail) && data.detail.length > 0) {
+      return data.detail.map((d) => d.msg).join("; ");
+    }
+  } catch {
+    // response had no JSON body
+  }
+  return `Request failed (error ${response.status}).`;
+}
+
 function App() {
   const [mode, setMode] = useState("ask");
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
+  const [answerMode, setAnswerMode] = useState("ask");
+  const [isError, setIsError] = useState(false);
   const [sources, setSources] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [uploadStatus, setUploadStatus] = useState("");
+  const [uploadStatus, setUploadStatus] = useState({ text: "", kind: "info" });
   const [documents, setDocuments] = useState([]);
   const [selected, setSelected] = useState([]);
 
   const loadDocuments = async () => {
     try {
       const res = await fetch(`${API}/documents`);
+      if (!res.ok) throw new Error(await errorMessage(res));
       const data = await res.json();
-      setDocuments(data.documents);
-      setSelected(data.documents);
+      const docs = data.documents || [];
+      setDocuments(docs);
+      setSelected(docs);
     } catch (error) {
       setDocuments([]);
       setSelected([]);
@@ -63,36 +88,47 @@ function App() {
     );
   };
 
+  const showError = (message) => {
+    setIsError(true);
+    setAnswer(message);
+    setSources([]);
+  };
+
   const askQuestion = async () => {
-    if (!question.trim()) return;
+    if (loading || !question.trim()) return;
 
     if (mode === "compare" && selected.length < 2) {
-      setAnswer("Please tick at least 2 documents above to compare.");
-      setSources([]);
+      setAnswerMode(mode);
+      showError("Please tick at least 2 documents above to compare.");
       return;
     }
 
     setLoading(true);
     setAnswer("");
     setSources([]);
+    setIsError(false);
+    setAnswerMode(mode);
 
     try {
       const endpoint = mode === "ask" ? "/ask" : "/compare";
-      const body =
-        mode === "ask"
-          ? { question, top_k: 5 }
-          : { question, documents: selected };
+      // Ask: the backend chooses how many chunks to retrieve (top_k default).
+      const body = mode === "ask" ? { question } : { question, documents: selected };
 
       const response = await fetch(`${API}${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = await response.json();
-      setAnswer(data.answer);
-      setSources(mode === "ask" ? data.sources : data.documents_compared);
+
+      if (!response.ok) {
+        showError(await errorMessage(response));
+      } else {
+        const data = await response.json();
+        setAnswer(data.answer || "No answer was returned.");
+        setSources((mode === "ask" ? data.sources : data.documents_compared) || []);
+      }
     } catch (error) {
-      setAnswer("Error: Could not reach the backend. Is the server running?");
+      showError("Could not reach the backend. Is the server running?");
     }
 
     setLoading(false);
@@ -102,7 +138,7 @@ function App() {
     const file = e.target.files[0];
     if (!file) return;
 
-    setUploadStatus(`Uploading ${file.name}...`);
+    setUploadStatus({ text: `Uploading ${file.name}...`, kind: "info" });
 
     const formData = new FormData();
     formData.append("file", file);
@@ -112,11 +148,19 @@ function App() {
         method: "POST",
         body: formData,
       });
-      const data = await response.json();
-      setUploadStatus(`✅ ${data.filename} processed (${data.chunks_stored} chunks stored)`);
-      await loadDocuments();
+
+      if (!response.ok) {
+        setUploadStatus({ text: `❌ ${file.name}: ${await errorMessage(response)}`, kind: "err" });
+      } else {
+        const data = await response.json();
+        setUploadStatus({
+          text: `✅ ${data.filename} processed (${data.chunks_stored} chunks stored)`,
+          kind: "ok",
+        });
+        await loadDocuments();
+      }
     } catch (error) {
-      setUploadStatus("❌ Upload failed. Is the backend running?");
+      setUploadStatus({ text: "❌ Upload failed. Is the backend running?", kind: "err" });
     }
 
     e.target.value = "";
@@ -160,7 +204,9 @@ function App() {
 
         <div className="upload">
           <input type="file" accept=".pdf" onChange={handleFileUpload} />
-          {uploadStatus && <p className="muted">{uploadStatus}</p>}
+          {uploadStatus.text && (
+            <p className={`status ${uploadStatus.kind}`}>{uploadStatus.text}</p>
+          )}
         </div>
       </div>
 
@@ -183,6 +229,7 @@ function App() {
             className="input"
             type="text"
             value={question}
+            maxLength={MAX_QUESTION_LENGTH}
             onChange={(e) => setQuestion(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && askQuestion()}
             placeholder={mode === "ask" ? "Ask a question..." : "What do you want to compare?"}
@@ -195,12 +242,12 @@ function App() {
 
       {answer && (
         <div className="card">
-          <div className="answer">
+          <div className={`answer ${isError ? "error" : ""}`}>
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown>
           </div>
           {sources.length > 0 && (
             <div className="chips">
-              <strong>{mode === "ask" ? "Sources:" : "Compared:"}</strong>
+              <strong>{answerMode === "ask" ? "Sources:" : "Compared:"}</strong>
               {sources.map((s) => (
                 <span key={s} className="chip">{s}</span>
               ))}
