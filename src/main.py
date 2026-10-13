@@ -1,13 +1,16 @@
 import os
 import re
+import threading
+import time
+from collections import defaultdict, deque
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from pdf_reader import read_pdf
 from chunker import chunk_text
-from embed_store import store_chunks, collection
+from embed_store import store_chunks
 from rag_pipeline import generate_answer
 from comparison import compare_documents_detailed, get_documents_in_store
 
@@ -33,6 +36,61 @@ MAX_UPLOAD_MB = 25
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 NOT_FOUND_PHRASE = "couldn't find this in the provided documents"
 
+# ---------------------------------------------------------------- rate limiting
+# Per user (IP address): list of (max requests, window in seconds).
+RATE_LIMITS = {
+    "ask": [(10, 60), (100, 86400)],
+    "compare": [(3, 60), (20, 86400)],
+    "upload": [(10, 3600)],
+}
+# For the whole app, per day. Caps the worst-case OpenAI bill.
+GLOBAL_DAILY_LIMITS = {"ask": 1000, "compare": 100, "upload": 200}
+
+_hits = defaultdict(deque)   # (action, ip or "*") -> timestamps of recent requests
+_rate_lock = threading.Lock()
+
+
+def _window_text(seconds):
+    return {60: "minute", 3600: "hour", 86400: "day"}.get(seconds, f"{seconds} seconds")
+
+
+def client_ip(request: Request):
+    # Behind a hosting proxy the real address is in X-Forwarded-For (set TRUST_PROXY=1 there).
+    if os.getenv("TRUST_PROXY") == "1":
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def check_rate_limit(request: Request, action: str):
+    """Raises HTTP 429 if this user, or the whole app, has made too many requests."""
+    now = time.time()
+    ip = client_ip(request)
+    checks = [
+        ((action, ip), RATE_LIMITS[action], "you have"),
+        ((action, "*"), [(GLOBAL_DAILY_LIMITS[action], 86400)], "the app has"),
+    ]
+    with _rate_lock:
+        for key, rules, who in checks:
+            timestamps = _hits[key]
+            longest = max(window for _, window in rules)
+            while timestamps and now - timestamps[0] > longest:
+                timestamps.popleft()
+            for limit, window in rules:
+                recent = sum(1 for t in timestamps if now - t <= window)
+                if recent >= limit:
+                    print(f"[rate-limit] {action} blocked for {ip}: {limit} per {_window_text(window)}")
+                    raise HTTPException(
+                        status_code=429,
+                        detail=(f"Too many {action} requests: {who} reached the limit of {limit} per "
+                                f"{_window_text(window)}. Please wait and try again."),
+                    )
+        for key, _, _ in checks:
+            _hits[key].append(now)
+
+
+# ---------------------------------------------------------------- request models
 
 class QuestionRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=2000)
@@ -54,14 +112,18 @@ def safe_pdf_name(filename):
     return name[:150]
 
 
+# ---------------------------------------------------------------- endpoints
+
 @app.get("/")
 def root():
     return {"message": "AI Study Assistant API is running"}
 
 
 @app.post("/upload")
-async def upload_pdf(file: UploadFile = File(...)):
+async def upload_pdf(request: Request, file: UploadFile = File(...)):
     """Upload a PDF, check it, process it, and store it in the vector database."""
+    check_rate_limit(request, "upload")
+
     filename = safe_pdf_name(file.filename)
     if filename is None:
         raise HTTPException(status_code=400, detail="Only .pdf files can be uploaded.")
@@ -113,9 +175,10 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 
 @app.post("/ask")
-def ask_question(request: QuestionRequest):
+def ask_question(body: QuestionRequest, request: Request):
     """Ask a question and get a grounded answer with sources."""
-    answer, sources = generate_answer(request.question, top_k=request.top_k)
+    check_rate_limit(request, "ask")
+    answer, sources = generate_answer(body.question, top_k=body.top_k)
 
     # If the model could not answer, retrieved documents are not real sources.
     normalized = answer.lower().replace("\u2019", "'")
@@ -126,10 +189,11 @@ def ask_question(request: QuestionRequest):
 
 
 @app.post("/compare")
-def compare(request: CompareRequest):
+def compare(body: CompareRequest, request: Request):
     """Compare multiple documents on a given question."""
-    documents = request.documents if request.documents else get_documents_in_store()
-    result = compare_documents_detailed(request.question, documents)
+    check_rate_limit(request, "compare")
+    documents = body.documents if body.documents else get_documents_in_store()
+    result = compare_documents_detailed(body.question, documents)
     return {
         "answer": result["answer"],
         "documents_compared": result["documents_used"],
