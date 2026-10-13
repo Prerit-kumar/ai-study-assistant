@@ -58,26 +58,43 @@ After a long round of prompt tuning, a simple database report (`src/db_tools.py`
 - **Chunks were far larger than intended.** A "500-word" chunk held about 1,600 real words, and the embedding model only reads the first 256 tokens, so most of each chunk was invisible to vector search.
 - Facts deep inside a paper, like numbers in tables, were often unreachable.
 
-**Fix:** extract with `x_tolerance=1` (DistilBERT went from 827 to 2,820 words), and use 180-word chunks so every chunk fits the embedding model's 256-token limit. The 40-paper index grew from about 1,000 to **3,944 chunks**. The evaluation numbers below were measured *before* this fix and will be re-run.
+**Fix:** extract with `x_tolerance=1` (DistilBERT went from 827 to 2,820 words), and use 180-word chunks so every chunk fits the embedding model's 256-token limit. The 40-paper index grew from about 1,000 to **3,944 chunks**. Chinchilla's "1.4T training tokens", which the comparison benchmark had failed on every run before the fix, now passes.
 
 ---
 
 ## Evaluation
 
-### Comparison benchmark (`src/compare_eval.py`)
+### Ask mode (`src/evaluation.py`)
 
-Five fixed questions over a 45-document corpus (measured before the text-extraction fix above), each with expected papers and number checks (e.g. Chinchilla's row must say 70B and 1.4T, and must not contain Gopher's 280B). One question is a **trap** with no correct answer (image segmentation in an NLP corpus).
+35 questions over the 40-paper corpus, scored in code (no LLM judge): the expected paper must appear in the cited sources, and the answer must contain the key fact (e.g. *175* for GPT-3's parameter count, *28.4* for the Transformer's WMT14 EN-DE BLEU). Five questions have no answer in the papers and must be refused.
 
 | Metric | Result |
 |---|---|
-| Paper selection precision | **0.96** |
-| Paper selection recall | **0.92** |
-| Number checks | 4 / 6 |
-| Empty "Not stated" rows | 0 |
-| Trap question (should return "not found") | passed |
-| Time for 5 questions | ~47 s |
+| Correct source cited | **30 / 30** |
+| Key fact in the answer | **30 / 30** |
+| Wrongly refused | 0 / 30 |
+| Correctly refused (unanswerable) | **5 / 5** |
+| Hallucinated on unanswerable | 0 / 5 |
+| Median latency | 2.4 s |
+| Cost per run | about $0.01 |
 
-*Single run with gpt-4o selection and gpt-4o-mini extraction. LLM outputs vary between runs, so treat these as indicative, not exact.*
+*These are direct factual questions, and most of them name the paper. A perfect score here means the basics work, not that the system is perfect. Harder questions (not naming the paper, facts buried in tables, questions spanning several papers) are next on the roadmap.*
+
+### Comparison benchmark (`src/compare_eval.py`)
+
+Five fixed questions over the 40-paper corpus, each with expected papers and number checks (e.g. Chinchilla's row must say 70B and 1.4T, and must not contain Gopher's 280B). One question is a **trap** with no correct answer (image segmentation in an NLP corpus).
+
+| Metric | Before text-extraction fix | After |
+|---|---|---|
+| Paper selection precision | 0.96 | **1.00** |
+| Paper selection recall | 0.92 | 0.92 |
+| Number checks | 4 / 6 | 4 / 6 (Chinchilla now passes) |
+| Empty "Not stated" rows | 0 | 0 |
+| Trap question (should return "not found") | passed | passed |
+| Time for 5 questions | ~47 s | ~35 s |
+| Cost per run | | about $0.15 |
+
+*gpt-4o selects the papers and gpt-4o-mini extracts facts. LLM outputs vary between runs, so treat these as indicative. The remaining misses are GPT-3 sometimes not being selected for the model-size question, and Mixtral's row reporting only its 13B active parameters.*
 
 ### Fine-tuning experiment (`finetune/`)
 
@@ -106,8 +123,9 @@ Five fixed questions over a 45-document corpus (measured before the text-extract
 - **Small fine-tuning test set:** differences of a few percentage points may be noise.
 - **Truncation during training:** examples longer than 2,048 tokens were cut, which dropped about 32% of the training examples. A v2 with shorter chunks and a longer sequence length is planned.
 - **The fine-tuned model is an experiment.** The app currently uses the OpenAI API for answers.
-- **Numbers that live in tables** (e.g. Chinchilla's 1.4T training tokens) are sometimes missed or attributed to the wrong model, because retrieval doesn't always surface the right chunk.
+- **Numbers that live in tables** can still be missed or attributed to the wrong model when retrieval doesn't surface the right chunk.
 - **The trap question doesn't pass every run.** The selector occasionally picks loosely related papers when nothing fits.
+- **Borderline papers are not always selected.** GPT-3, whose abstract is mostly about few-shot prompting, is sometimes skipped for questions about model size.
 - **No rate limiting yet:** a public deployment needs per-user limits so nobody can run up the OpenAI bill.
 - **Fine-tuning data was generated before the text-extraction fix,** so some training contexts contain glued words. v2 will regenerate the data.
 
@@ -174,7 +192,6 @@ Run the comparison benchmark with `python compare_eval.py` from `src/`. Cached r
 ## Roadmap
 
 - Fine-tuning v2: shorter chunks, ~2,500–3,000 examples, longer sequence length; compare base vs v1 vs v2
-- Re-run the comparison benchmark after the text-extraction fix
-- Ask-mode benchmark on the 40-paper corpus (accuracy, hallucination rate, latency, cost)
+- Harder Ask-mode benchmark: questions that don't name the paper, table facts, multi-paper questions
 - Document filter in Ask mode and a summarization feature
 - Rate limiting and deployment

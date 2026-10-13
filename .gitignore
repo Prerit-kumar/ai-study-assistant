@@ -9,3 +9,4 @@ finetune_data/
 src/compare_eval_*.json
 LPNN_DEMO.ipynb
 node_modules/
+src/ask_eval_results.json
