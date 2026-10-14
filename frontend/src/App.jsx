@@ -254,8 +254,8 @@ html { scroll-behavior: smooth; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .spine:hover, .spine:focus-visible { transform: translateZ(40px) translateY(-8px) rotateY(-14deg); filter: brightness(1.18); z-index: 2; }
-.compare-mode .spine.off { --book: color-mix(in srgb, var(--spine) 30%, #0d1220); color: rgba(241,230,204,0.35); transform: translateZ(-14px); }
-.compare-mode .spine.on { transform: translateZ(10px); }
+.compare-mode .spine.off { --book: color-mix(in srgb, var(--spine) 38%, #0d1220); color: rgba(241,230,204,0.45); }
+.compare-mode .spine.on { transform: translateZ(10px); box-shadow: 0 0 0 1.5px var(--gold-hi), 0 0 16px rgba(217,178,111,0.35); }
 .compare-mode .spine.on:hover, .compare-mode .spine.off:hover { transform: translateZ(40px) translateY(-8px) rotateY(-14deg); }
 .page .spine.dim { --book: color-mix(in srgb, var(--spine) 18%, #0d1220); color: transparent; }
 .page .spine.cited {
@@ -503,6 +503,20 @@ html { scroll-behavior: smooth; }
   display: block; width: 100%; margin: 22px 0 6px; padding: 48px 20px; border: 1px dashed var(--line-strong); border-radius: 14px;
   background: rgba(255,255,255,0.02); color: var(--muted); font-size: 15px; text-align: center; cursor: pointer; transition: border-color 200ms ease, color 200ms ease, background 200ms ease;
 }
+.my-files { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+.my-files .label { margin-right: 4px; }
+.file-chip {
+  display: inline-flex; align-items: center; gap: 8px; padding: 4px 5px 4px 12px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--panel-hi); font-size: 13px; color: var(--ink-soft); max-width: 100%;
+}
+.file-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-chip button {
+  border: 0; background: rgba(255,255,255,0.06); color: var(--muted); border-radius: 999px; min-width: 24px; height: 24px; padding: 0 8px;
+  cursor: pointer; font-size: 12px; font-weight: 700; flex-shrink: 0; transition: color 150ms ease, background 150ms ease;
+}
+.file-chip button:hover { color: var(--danger); background: rgba(242,164,158,0.14); }
+.file-chip button.confirm { color: #2a0d0b; background: var(--danger); }
+.file-chip button:disabled { opacity: 0.5; cursor: progress; }
 .empty-shelf strong { display: block; font-family: var(--serif); font-size: 22px; font-weight: 400; color: var(--ink); margin-bottom: 6px; }
 .empty-shelf:hover, .empty-shelf.dragging { border-color: var(--gold); color: var(--ink-soft); background: rgba(217,178,111,0.05); }
 `;
@@ -611,6 +625,8 @@ function App() {
   const [intro, setIntro] = useState(true);
   const [engine, setEngine] = useState("gpt"); // "gpt" or "both" (GPT + fine-tuned local model)
   const [localReady, setLocalReady] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null); // file waiting for a second click to delete
+  const [deleting, setDeleting] = useState(null);
   const fileInput = useRef(null);
   const questionInput = useRef(null);
 
@@ -774,6 +790,31 @@ function App() {
     } catch {
       setUploadStatus({ text: "Upload failed. Check that the backend is running.", kind: "err" });
     }
+  };
+
+  // Delete one of the user's own PDFs. The first click asks "Delete?", the second click deletes.
+  const deleteFile = async (doc) => {
+    if (confirmDelete !== doc) {
+      setConfirmDelete(doc);
+      setTimeout(() => setConfirmDelete((current) => (current === doc ? null : current)), 3000);
+      return;
+    }
+    setConfirmDelete(null);
+    setDeleting(doc);
+    try {
+      const response = await fetch(`${API}/documents/${encodeURIComponent(doc)}`, { method: "DELETE" });
+      if (!response.ok) {
+        setUploadStatus({ text: `${prettyName(doc)}: ${await errorMessage(response)}`, kind: "err" });
+      } else {
+        setUploadStatus({ text: `Deleted ${prettyName(doc)}.`, kind: "ok" });
+        setSelected((prev) => prev.filter((d) => d !== doc));
+        if (result?.sources?.includes(doc)) setResult(null);
+        await loadDocuments();
+      }
+    } catch {
+      setUploadStatus({ text: "Delete failed. Check that the backend is running.", kind: "err" });
+    }
+    setDeleting(null);
   };
 
   const copyAnswer = async () => {
@@ -1021,6 +1062,24 @@ function App() {
                 onChange={(e) => { uploadFile(e.target.files[0]); e.target.value = ""; }}
               />
               {!(scope === "mine" && myDocs.length === 0) && <p className="caption" aria-live="polite">{caption}</p>}
+              {scope === "mine" && myDocs.length > 0 && UPLOADS_ON && (
+                <div className="my-files">
+                  <span className="label">Your files</span>
+                  {myDocs.map((doc) => (
+                    <span className="file-chip" key={doc} title={prettyName(doc)}>
+                      <span>{prettyName(doc)}</span>
+                      <button
+                        className={confirmDelete === doc ? "confirm" : ""}
+                        onClick={() => deleteFile(doc)}
+                        disabled={deleting === doc}
+                        aria-label={confirmDelete === doc ? `Confirm deleting ${prettyName(doc)}` : `Delete ${prettyName(doc)}`}
+                      >
+                        {deleting === doc ? "…" : confirmDelete === doc ? "Delete?" : "×"}
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
               {uploadStatus.text && <p className={`status ${uploadStatus.kind}`}>{uploadStatus.text}</p>}
             </section>
 

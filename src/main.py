@@ -11,7 +11,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from chunker import chunk_text
-from embed_store import store_chunks
+from embed_store import collection, store_chunks
 from rag_pipeline import generate_answer, generate_answer_both, local_model_available
 from comparison import compare_documents_detailed, get_documents_in_store
 
@@ -28,7 +28,7 @@ ALLOWED_ORIGINS = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -222,6 +222,27 @@ def compare(body: CompareRequest, request: Request):
 def local_model_status():
     """Whether the fine-tuned model server (finetune/model_server.py) is running."""
     return {"available": local_model_available()}
+
+
+@app.delete("/documents/{filename}")
+def delete_document(filename: str, request: Request):
+    """Delete an uploaded PDF: its chunks are removed from the database and the file from data/."""
+    if os.getenv("ALLOW_UPLOADS", "1") != "1":
+        raise HTTPException(status_code=403, detail="Deleting is turned off in the live demo.")
+    check_rate_limit(request, "upload")
+
+    name = safe_pdf_name(filename)
+    if name is None or name != filename:
+        raise HTTPException(status_code=400, detail="Invalid file name.")
+    if name not in get_documents_in_store():
+        raise HTTPException(status_code=404, detail="This paper is not in the library.")
+
+    collection.delete(where={"source": name})
+    path = os.path.join(DATA_DIR, name)
+    if os.path.exists(path):
+        os.remove(path)
+    print(f"[delete] removed {name}")
+    return {"deleted": name}
 
 
 @app.get("/documents")
