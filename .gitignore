@@ -11,3 +11,5 @@ src/compare_eval_*.json
 LPNN_DEMO.ipynb
 node_modules/
 src/ask_eval_results.json
+model_cache/
+hf_space/

@@ -2,7 +2,10 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-const API = "http://127.0.0.1:8000";
+// Backend address: set VITE_API_URL on Vercel; falls back to the local backend.
+const API = (import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+// The public demo can switch uploads off with VITE_ALLOW_UPLOADS=0.
+const UPLOADS_ON = import.meta.env.VITE_ALLOW_UPLOADS !== "0";
 const MAX_QUESTION_LENGTH = 2000;
 const REPO_URL = "https://github.com/Prerit-kumar/ai-study-assistant";
 
@@ -21,7 +24,26 @@ const TOPICS = [
   { id: "reasoning", name: "Reasoning & tools", color: "var(--c-reasoning)",
     papers: ["Chain_of_Thought", "ReAct", "Toolformer"] },
 ];
-const UPLOADS = { id: "uploads", name: "Your uploads", color: "var(--c-uploads)" };
+const UPLOADS = { id: "uploads", name: "My papers", color: "var(--c-uploads)" };
+// Every paper in the demo library. Anything else in the database is one of the user's own uploads.
+const LIBRARY_DOCS = new Set(TOPICS.flatMap((t) => t.papers.map((p) => `${p}.pdf`)));
+const VIEWS = ["ask", "compare", "about"];
+const viewFromHash = () => {
+  const hash = window.location.hash.replace("#", "");
+  return VIEWS.includes(hash) ? hash : "ask";
+};
+
+const MY_EXAMPLES = {
+  ask: [
+    "Summarize the main contribution of this paper.",
+    "What method does it propose?",
+    "What are the main results?",
+  ],
+  compare: [
+    "Compare the methods proposed in these papers.",
+    "Compare the datasets and results reported in these papers.",
+  ],
+};
 
 const EXAMPLES = {
   ask: [
@@ -34,6 +56,16 @@ const EXAMPLES = {
     "Compare the parameter-efficient fine-tuning methods in these papers.",
     "Compare how these papers use retrieval to improve language models.",
   ],
+};
+
+// Shown above the two answers when both models are asked (verdicts come from the backend).
+const VERDICTS = {
+  agree: { kind: "good", icon: "✓", title: "Both models agree", text: "the fine-tuned model gave the same answer from the same passage" },
+  differ: { kind: "info", icon: "≈", title: "Both models answered", text: "but from different passages, so check the sources" },
+  warning: { kind: "warn", icon: "!", title: "Not confirmed", text: "the fine-tuned model couldn't find this in the passages, so check the sources before relying on it" },
+  local_only: { kind: "info", icon: "↑", title: "Answered by the fine-tuned model", text: "GPT couldn't find it in the passages" },
+  not_found: { kind: "good", icon: "✓", title: "Both models agree", text: "this isn't in the papers" },
+  local_unavailable: { kind: "warn", icon: "!", title: "GPT only", text: "the fine-tuned model isn't running" },
 };
 
 const css = `
@@ -344,6 +376,49 @@ html { scroll-behavior: smooth; }
 .notes summary { cursor: pointer; color: var(--ink-soft); font-weight: 600; }
 .notes summary:hover { color: var(--gold-hi); }
 .notes p { margin: 8px 0 0; }
+.engine { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 14px; }
+.engine-opts { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.engine-opts button {
+  border: 1px solid var(--line); background: var(--panel-hi); color: var(--ink-soft); border-radius: 999px; padding: 6px 14px;
+  font-size: 13px; font-weight: 600; cursor: pointer; transition: border-color 200ms ease, color 200ms ease, background 200ms ease;
+}
+.engine-opts button:hover:not(:disabled) { border-color: rgba(217,178,111,0.45); }
+.engine-opts button[aria-pressed="true"] { border-color: rgba(217,178,111,0.6); color: var(--gold-hi); background: rgba(217,178,111,0.1); }
+.engine-opts button:disabled { opacity: 0.45; cursor: not-allowed; }
+.engine-note { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; }
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 7px; background: var(--muted); }
+.dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+
+.check { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.check-line { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+.check-line b { font-weight: 600; }
+.check-icon { width: 20px; height: 20px; border-radius: 6px; flex-shrink: 0; display: grid; place-items: center; font-size: 12px; font-weight: 700; }
+.check-line.good b { color: var(--ok); }
+.check-line.good .check-icon { background: rgba(143,212,168,0.16); color: var(--ok); }
+.check-line.warn b { color: var(--danger); }
+.check-line.warn .check-icon { background: rgba(242,164,158,0.16); color: var(--danger); }
+.check-line.info b { color: var(--gold-hi); }
+.check-line.info .check-icon { background: rgba(217,178,111,0.16); color: var(--gold-hi); }
+.check-more { margin-top: 10px; }
+.check-more summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--ink-soft); width: fit-content; }
+.check-more summary:hover { color: var(--gold-hi); }
+.check-more .duo { margin-top: 14px; }
+.duo { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 860px) { .duo { grid-template-columns: 1fr; } }
+.duo-card { border: 1px solid var(--line); border-radius: 14px; padding: 18px 18px 16px; background: rgba(0,0,0,0.18); min-width: 0; }
+.duo-card.best { border-color: rgba(217,178,111,0.55); box-shadow: 0 0 0 1px rgba(217,178,111,0.2), 0 18px 40px -24px rgba(217,178,111,0.5); }
+.duo-card.flagged { border-color: rgba(242,164,158,0.45); }
+.duo-top { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; margin-bottom: 12px; }
+.duo-name { font-weight: 700; font-size: 14px; }
+.duo-sub { display: block; font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 3px; }
+.tag { font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; padding: 4px 9px; border-radius: 999px; white-space: nowrap; }
+.tag.best { color: #1d1408; background: linear-gradient(180deg, var(--gold-hi), var(--gold)); font-weight: 600; }
+.tag.flag { color: var(--danger); border: 1px solid rgba(242,164,158,0.5); }
+.duo .answer { font-size: 15px; line-height: 1.6; }
+.duo-sources { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+.duo-sources span { font-size: 12px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink-soft); }
+.duo-empty { color: var(--muted); font-size: 14px; font-style: italic; margin: 0; }
+
 .copy { border: 1px solid var(--line); background: var(--panel-hi); color: var(--ink-soft); border-radius: 8px; padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; transition: border-color 200ms ease, color 200ms ease; }
 .copy:hover { border-color: var(--gold); color: var(--gold-hi); }
 
@@ -392,6 +467,44 @@ html { scroll-behavior: smooth; }
 .footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px 20px; justify-content: space-between; color: var(--muted); font-size: 13px; }
 .footer a { color: var(--muted); text-decoration: none; }
 .footer a:hover { color: var(--gold-hi); }
+
+/* ---------- navigation ---------- */
+.topbar {
+  display: block; position: sticky; top: 0; z-index: 20;
+  background: rgba(9, 12, 20, 0.78); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar-inner { max-width: 1200px; margin: 0 auto; padding: 14px 24px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+@media (max-width: 640px) { .topbar-inner { padding: 12px 16px; } .brandmark span, .gh span { display: none; } }
+.nav { display: inline-flex; gap: 2px; padding: 4px; border: 1px solid var(--line); border-radius: 12px; background: rgba(0,0,0,0.3); }
+.nav a { padding: 7px 16px; border-radius: 9px; font-size: 14px; font-weight: 600; color: var(--muted); text-decoration: none; transition: color 200ms ease, background 200ms ease; }
+@media (max-width: 420px) { .nav a { padding: 7px 11px; } }
+.nav a:hover { color: var(--ink); }
+.nav a[aria-current="page"] { color: var(--ink); background: linear-gradient(180deg, rgba(255,255,255,0.1), rgba(255,255,255,0.04)); box-shadow: inset 0 0 0 1px var(--line-strong); }
+
+.intro-head { margin-top: 8px; }
+.intro-head h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(34px, 4.6vw, 52px); line-height: 1.05; letter-spacing: -0.02em; margin: 0; }
+.intro-head h1 em { font-style: italic; color: var(--gold-hi); }
+.intro-head p { margin: 12px 0 0; color: var(--ink-soft); font-size: 16px; max-width: 60ch; }
+.view-about .about { margin-top: 8px; }
+
+/* ---------- library / my papers ---------- */
+.scope { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.scope button {
+  display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--panel-hi); color: var(--ink-soft);
+  border-radius: 999px; padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; transition: border-color 200ms ease, color 200ms ease, background 200ms ease;
+}
+.scope button span { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.scope button[aria-pressed="true"] { border-color: rgba(217,178,111,0.6); color: var(--gold-hi); background: rgba(217,178,111,0.1); }
+.scope button[aria-pressed="true"] span { color: var(--gold); }
+.upload-btn { border: 1px solid var(--line-strong); background: var(--panel-hi); color: var(--ink-soft); border-radius: 10px; padding: 8px 14px; font-size: 13px; font-weight: 600; cursor: pointer; transition: border-color 200ms ease, color 200ms ease; }
+.upload-btn:hover { border-color: var(--gold); color: var(--gold-hi); }
+.empty-shelf {
+  display: block; width: 100%; margin: 22px 0 6px; padding: 48px 20px; border: 1px dashed var(--line-strong); border-radius: 14px;
+  background: rgba(255,255,255,0.02); color: var(--muted); font-size: 15px; text-align: center; cursor: pointer; transition: border-color 200ms ease, color 200ms ease, background 200ms ease;
+}
+.empty-shelf strong { display: block; font-family: var(--serif); font-size: 22px; font-weight: 400; color: var(--ink); margin-bottom: 6px; }
+.empty-shelf:hover, .empty-shelf.dragging { border-color: var(--gold); color: var(--ink-soft); background: rgba(217,178,111,0.05); }
 `;
 
 const prettyName = (doc) => doc.replace(/\.pdf$/i, "").replace(/_/g, " ");
@@ -429,20 +542,75 @@ function GitHubIcon() {
   );
 }
 
+function AnswerCard({ name, sub, part, best, flagged }) {
+  return (
+    <article className={`duo-card ${best ? "best" : ""} ${flagged ? "flagged" : ""}`}>
+      <div className="duo-top">
+        <div>
+          <div className="duo-name">{name}</div>
+          <span className="duo-sub">{sub}</span>
+        </div>
+        {best && <span className="tag best">Best supported</span>}
+        {flagged && <span className="tag flag">Unverified</span>}
+      </div>
+      {part ? (
+        <>
+          <div className="answer">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{part.answer}</ReactMarkdown>
+          </div>
+          {part.sources.length > 0 && (
+            <div className="duo-sources">
+              {part.sources.map((s) => <span key={s}>{prettyName(s)}</span>)}
+            </div>
+          )}
+        </>
+      ) : (
+        <p className="duo-empty">Not running. Start finetune/model_server.py to see this answer.</p>
+      )}
+    </article>
+  );
+}
+
+function ModelCheck({ both }) {
+  const verdict = VERDICTS[both.verdict] || VERDICTS.differ;
+  const localSeconds = both.local?.seconds != null ? ` · ${both.local.seconds}s` : "";
+  return (
+    <div className="check">
+      <div className={`check-line ${verdict.kind}`}>
+        <span className="check-icon" aria-hidden="true">{verdict.icon}</span>
+        <span><b>{verdict.title}</b> · {verdict.text}</span>
+      </div>
+      {both.local && (
+        <details className="check-more">
+          <summary>See both answers</summary>
+          <div className="duo">
+            <AnswerCard name="GPT-4o-mini" sub="OpenAI API" part={both.gpt} best={both.best === "gpt"} flagged={both.verdict === "warning"} />
+            <AnswerCard name="Fine-tuned Llama-3.2-3B" sub={`QLoRA v2 · local GPU${localSeconds}`} part={both.local} best={both.best === "local"} flagged={false} />
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function App() {
-  const [mode, setMode] = useState("ask");
+  const [view, setView] = useState(viewFromHash); // "ask" | "compare" | "about"
+  const mode = view === "compare" ? "compare" : "ask";
+  const [scope, setScope] = useState("library"); // "library" (demo papers) or "mine" (the user's own uploads)
   const [question, setQuestion] = useState("");
-  const [result, setResult] = useState(null); // { mode, text, sources, isError }
+  const [result, setResult] = useState(null); // { mode, text, sources, both, isError }
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [uploadStatus, setUploadStatus] = useState({ text: "", kind: "" });
   const [dragging, setDragging] = useState(false);
   const [documents, setDocuments] = useState([]);
-  const [selected, setSelected] = useState([]);
+  const [selected, setSelected] = useState([]); // papers picked for Compare (nothing is picked automatically)
   const [filter, setFilter] = useState("");
   const [hovered, setHovered] = useState(null);
   const [tilt, setTilt] = useState(null);
   const [intro, setIntro] = useState(true);
+  const [engine, setEngine] = useState("gpt"); // "gpt" or "both" (GPT + fine-tuned local model)
+  const [localReady, setLocalReady] = useState(false);
   const fileInput = useRef(null);
   const questionInput = useRef(null);
 
@@ -451,12 +619,9 @@ function App() {
       const res = await fetch(`${API}/documents`);
       if (!res.ok) throw new Error(await errorMessage(res));
       const data = await res.json();
-      const docs = data.documents || [];
-      setDocuments(docs);
-      setSelected(docs);
+      setDocuments(data.documents || []);
     } catch {
       setDocuments([]);
-      setSelected([]);
     }
   };
 
@@ -464,31 +629,64 @@ function App() {
     document.title = "Study Assistant AI";
     loadDocuments();
     const timer = setTimeout(() => setIntro(false), 2400);
-    return () => clearTimeout(timer);
+    const onHash = () => setView(viewFromHash());
+    window.addEventListener("hashchange", onHash);
+
+    // Is the fine-tuned model server (finetune/model_server.py) running? Checked every 10 seconds.
+    const checkLocal = async () => {
+      try {
+        const res = await fetch(`${API}/local-model`);
+        setLocalReady(res.ok && (await res.json()).available === true);
+      } catch {
+        setLocalReady(false);
+      }
+    };
+    checkLocal();
+    const poll = setInterval(checkLocal, 10000);
+    return () => { clearTimeout(timer); clearInterval(poll); window.removeEventListener("hashchange", onHash); };
   }, []);
 
-  // Group the documents into shelf sections.
+  // A new page starts clean.
+  useEffect(() => {
+    setResult(null);
+    setQuestion("");
+    window.scrollTo({ top: 0 });
+  }, [view]);
+
+  const libraryDocs = useMemo(() => documents.filter((d) => LIBRARY_DOCS.has(d)), [documents]);
+  const myDocs = useMemo(() => documents.filter((d) => !LIBRARY_DOCS.has(d)), [documents]);
+  const scopeDocs = scope === "library" ? libraryDocs : myDocs;
+
+  // Shelf sections: topics for the demo library, one shelf for the user's own papers.
   const sections = useMemo(() => {
-    const placed = new Set();
-    const list = TOPICS.map((topic) => {
-      const docs = topic.papers.map((p) => `${p}.pdf`).filter((d) => documents.includes(d));
-      docs.forEach((d) => placed.add(d));
-      return { ...topic, docs };
-    }).filter((t) => t.docs.length > 0);
-    const rest = documents.filter((d) => !placed.has(d));
-    if (rest.length > 0) list.push({ ...UPLOADS, docs: rest });
-    return list;
-  }, [documents]);
+    if (scope === "mine") return myDocs.length > 0 ? [{ ...UPLOADS, docs: myDocs }] : [];
+    return TOPICS.map((topic) => ({
+      ...topic,
+      docs: topic.papers.map((p) => `${p}.pdf`).filter((d) => libraryDocs.includes(d)),
+    })).filter((t) => t.docs.length > 0);
+  }, [scope, libraryDocs, myDocs]);
+
+  const switchScope = (next) => {
+    setScope(next);
+    setSelected([]);
+    setResult(null);
+    setFilter("");
+  };
 
   const term = filter.trim().toLowerCase();
   const cited = new Set(result && !result.isError ? result.sources : []);
+  const examples = (scope === "mine" ? MY_EXAMPLES : EXAMPLES)[mode];
 
-  const run = async (text = question, runMode = mode) => {
+  const run = async (text = question, picked = selected) => {
     const q = text.trim();
     if (loading || !q) return;
 
-    if (runMode === "compare" && selected.length < 2) {
-      setResult({ mode: runMode, text: "Pick at least 2 books on the shelf to compare them.", sources: [], isError: true });
+    if (scopeDocs.length === 0) {
+      setResult({ mode, text: "Upload a PDF first. Your questions will search only your own papers.", sources: [], isError: true });
+      return;
+    }
+    if (mode === "compare" && picked.length < 2) {
+      setResult({ mode, text: "Pick at least 2 books on the shelf to compare them, or press Pick all.", sources: [], isError: true });
       return;
     }
 
@@ -497,33 +695,42 @@ function App() {
     setResult(null);
 
     try {
-      const endpoint = runMode === "ask" ? "/ask" : "/compare";
-      const body = runMode === "ask" ? { question: q } : { question: q, documents: selected };
+      const endpoint = mode === "ask" ? "/ask" : "/compare";
+      // Ask searches only the shelf that is open: the demo library or the user's own papers.
+      const askDocs = scope === "mine" || myDocs.length > 0 ? scopeDocs : [];
+      const body = mode === "ask" ? { question: q, mode: engine, documents: askDocs } : { question: q, documents: picked };
       const response = await fetch(`${API}${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
       if (!response.ok) {
-        setResult({ mode: runMode, text: await errorMessage(response), sources: [], isError: true });
+        setResult({ mode, text: await errorMessage(response), sources: [], isError: true });
       } else {
         const data = await response.json();
         setResult({
-          mode: runMode,
+          mode,
           text: data.answer || "No answer was returned.",
-          sources: (runMode === "ask" ? data.sources : data.documents_compared) || [],
+          sources: (mode === "ask" ? data.sources : data.documents_compared) || [],
+          both: mode === "ask" ? data.both || null : null,
           isError: false,
         });
       }
     } catch {
-      setResult({ mode: runMode, text: "Could not reach the server. Check that the backend is running.", sources: [], isError: true });
+      setResult({ mode, text: "Could not reach the server. Check that the backend is running.", sources: [], isError: true });
     }
     setLoading(false);
   };
 
   const pickExample = (text) => {
     setQuestion(text);
-    run(text);
+    // A Compare example with nothing picked compares every paper on the open shelf.
+    if (mode === "compare" && selected.length < 2) {
+      setSelected(scopeDocs);
+      run(text, scopeDocs);
+    } else {
+      run(text);
+    }
   };
 
   const onSpineClick = (doc) => {
@@ -545,8 +752,8 @@ function App() {
   };
 
   const uploadFile = async (file) => {
-    if (!file) return;
-    setUploadStatus({ text: `Adding ${file.name} to the shelf…`, kind: "" });
+    if (!file || !UPLOADS_ON) return;
+    setUploadStatus({ text: `Adding ${file.name} to your papers…`, kind: "" });
     const formData = new FormData();
     formData.append("file", file);
     try {
@@ -557,6 +764,12 @@ function App() {
         const data = await response.json();
         setUploadStatus({ text: `Added ${prettyName(data.filename)} (${data.chunks_stored} passages indexed).`, kind: "ok" });
         await loadDocuments();
+        // Open the user's own shelf, so questions search only their papers.
+        const wasMine = scope === "mine";
+        setScope("mine");
+        setResult(null);
+        setFilter("");
+        setSelected((prev) => (wasMine ? [...new Set([...prev, data.filename])] : [data.filename]));
       }
     } catch {
       setUploadStatus({ text: "Upload failed. Check that the backend is running.", kind: "err" });
@@ -572,15 +785,32 @@ function App() {
     }
   };
 
+  const dropHandlers = {
+    onDragOver: (e) => { e.preventDefault(); if (UPLOADS_ON) setDragging(true); },
+    onDragLeave: () => setDragging(false),
+    onDrop: (e) => { e.preventDefault(); setDragging(false); uploadFile(e.dataTransfer.files[0]); },
+  };
+
   const [mainText, notes] = result && !result.isError ? splitNotes(result.text) : [result?.text || "", ""];
   const isCompareResult = result?.mode === "compare";
+
+  let hint;
+  if (scope === "mine" && myDocs.length === 0) {
+    hint = "Upload your own PDFs. Questions will search only your papers.";
+  } else if (mode === "ask") {
+    hint = scope === "mine"
+      ? `Ask searches only your ${myDocs.length === 1 ? "paper" : `${myDocs.length} papers`}. Click a book to ask about it.`
+      : `Ask searches these ${libraryDocs.length} papers. Click a book to ask about it.`;
+  } else {
+    hint = `${selected.length} of ${scopeDocs.length} picked. Click books to pick them, or pick all.`;
+  }
 
   let caption;
   if (hovered) {
     caption = (
       <>
         <strong>{prettyName(hovered)}</strong>
-        {mode === "ask" ? "  ·  click to ask about it" : selected.includes(hovered) ? "  ·  picked for comparison, click to put it back" : "  ·  click to pick it for comparison"}
+        {mode === "ask" ? "  ·  click to ask about it" : selected.includes(hovered) ? "  ·  picked, click to put it back" : "  ·  click to pick it"}
       </>
     );
   } else if (cited.size > 0) {
@@ -596,273 +826,312 @@ function App() {
       <style>{css}</style>
       <div className="ambient" aria-hidden="true" />
       <div className="grain" aria-hidden="true" />
-      <div className={`page ${mode === "compare" ? "compare-mode" : ""}`}>
-        <div className="topbar reveal" id="top">
-          <span className="brandmark"><i aria-hidden="true" />Study Assistant AI</span>
-          <nav className="topnav">
-            <a className="navlink" href="#about">About</a>
-            <a className="gh" href={REPO_URL} target="_blank" rel="noreferrer"><GitHubIcon />Source</a>
+      <header className="topbar">
+        <div className="topbar-inner">
+          <span className="brandmark"><i aria-hidden="true" /><span>Study Assistant AI</span></span>
+          <nav className="nav" aria-label="Main">
+            <a href="#ask" aria-current={view === "ask" ? "page" : undefined}>Ask</a>
+            <a href="#compare" aria-current={view === "compare" ? "page" : undefined}>Compare</a>
+            <a href="#about" aria-current={view === "about" ? "page" : undefined}>About</a>
           </nav>
+          <a className="gh" href={REPO_URL} target="_blank" rel="noreferrer"><GitHubIcon /><span>Source</span></a>
         </div>
+      </header>
+      <div className={`page view-${view} ${mode === "compare" ? "compare-mode" : ""}`}>
 
-        <header className="hero">
-          <p className="eyebrow reveal" style={{ "--d": "80ms" }}>Research papers, answered with sources</p>
-          <h1 className="reveal" style={{ "--d": "160ms" }}>
-            Study Assistant <em>AI</em>
-          </h1>
-          <p className="reveal" style={{ "--d": "260ms" }}>
-            Ask a question and see exactly which papers the answer came from, or line up dozens of papers in a single comparison table.
-          </p>
-          <div className="stats reveal" style={{ "--d": "360ms" }}>
-            <span className="stat"><b>{documents.length}</b> papers</span>
-            <span className="stat"><b>{sections.length}</b> topics</span>
-            <span className="stat"><b>Hybrid</b> search + rerank</span>
-            <span className="stat"><b>Cited</b> answers</span>
-          </div>
-        </header>
+        {view === "about" ? (
+          <main>
+            <section className="about" id="about" aria-labelledby="about-title">
+              <div className="about-head">
+                <p className="eyebrow">About</p>
+                <h2 id="about-title">A research assistant that <em>shows its sources</em></h2>
+                <p>
+                  Study Assistant AI reads a library of research papers and answers questions from them, pointing to the exact
+                  papers each answer came from. When the answer isn't in the papers, it says so instead of guessing. It was built
+                  end to end, from PDF parsing to a fine-tuned local model, and every part is measured with its own benchmark.
+                </p>
+              </div>
 
-        <section className="panel shelf-wrap reveal" style={{ "--d": "440ms" }} aria-label="Paper shelf">
-          <div className="shelf-bar">
-            <div>
-              <span className="label">The library</span>
-              <p className="hint">
-                {mode === "ask"
-                  ? `Ask searches all ${documents.length} papers. Click a book to ask about it.`
-                  : `${selected.length} of ${documents.length} papers picked. Click a book to pick or drop it.`}
-              </p>
-            </div>
-            <div className="shelf-tools">
-              <input
-                className="filter"
-                type="search"
-                placeholder="Find a paper"
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                aria-label="Find a paper"
-              />
-              {mode === "compare" && (
+              <h3>How it works</h3>
+              <div className="how">
+                <article className="panel how-card">
+                  <span className="num">01 / Ask</span>
+                  <h4>Answers with citations</h4>
+                  <p>Keyword and meaning-based search find the best passages, a reranker sorts them, and the model answers only from those passages and names the ones it used.</p>
+                  <div className="flow">BM25 + vectors → cross-encoder → gpt-4o-mini</div>
+                </article>
+                <article className="panel how-card">
+                  <span className="num">02 / Compare</span>
+                  <h4>Many papers, one table</h4>
+                  <p>The relevant papers are picked from their abstracts, facts are pulled from each paper in parallel, and everything is merged into a single table with notes on what was left out.</p>
+                  <div className="flow">select → extract → reduce</div>
+                </article>
+                <article className="panel how-card">
+                  <span className="num">03 / Fine-tune</span>
+                  <h4>A local model that refuses to guess</h4>
+                  <p>A 3B Llama model was fine-tuned with QLoRA on a 6 GB laptop GPU to answer from retrieved passages, cite them, and refuse when the answer isn't there.</p>
+                  <div className="flow">Llama-3.2-3B · QLoRA · Unsloth</div>
+                </article>
+              </div>
+
+              <h3>Results</h3>
+              <div className="results">
+                <div className="panel metric"><b>30/30</b><span>Ask benchmark</span><small>right paper cited and right fact, plus 5/5 correct refusals</small></div>
+                <div className="panel metric"><b>1.00</b><span>Compare precision</span><small>no wrong papers in the table, 0.92 recall</small></div>
+                <div className="panel metric"><b>8%</b><span>Hallucination, local 3B</span><small>vs 26% for gpt-4o-mini on unseen papers</small></div>
+                <div className="panel metric"><b>85%</b><span>Citation accuracy</span><small>vs 81% for gpt-4o-mini</small></div>
+              </div>
+
+              <h3>Built with</h3>
+              <div className="stack">
+                {["Python", "FastAPI", "React", "ChromaDB", "sentence-transformers", "BM25", "Cross-encoder rerank", "OpenAI gpt-4o / 4o-mini", "Unsloth", "QLoRA", "Llama-3.2-3B"].map((t) => (
+                  <span key={t}>{t}</span>
+                ))}
+              </div>
+
+              <h3>Built by</h3>
+              <div className="panel builder">
+                <div className="builder-who">
+                  <div className="avatar" aria-hidden="true">PK</div>
+                  <div>
+                    <strong>Prerit Kumar</strong>
+                    <p>Final-year Data Science student · building with LLMs, retrieval and fine-tuning</p>
+                  </div>
+                </div>
+                <a className="gh" href={REPO_URL} target="_blank" rel="noreferrer"><GitHubIcon />View the code</a>
+              </div>
+            </section>
+          </main>
+        ) : (
+          <>
+            <div className="intro-head reveal" style={{ "--d": "60ms" }}>
+              {view === "ask" ? (
                 <>
-                  <button className="text-btn" onClick={() => setSelected(documents)}>Pick all</button>
-                  <button className="text-btn" onClick={() => setSelected([])}>Clear</button>
+                  <h1>Ask your <em>papers</em></h1>
+                  <p>Every answer shows the papers it came from. If the answer isn't in them, it says so.</p>
+                </>
+              ) : (
+                <>
+                  <h1>Compare <em>papers</em></h1>
+                  <p>Pick papers on the shelf and get one table that lines them up, with notes on what was left out.</p>
                 </>
               )}
             </div>
-          </div>
 
-          <div
-            className={`shelf ${intro ? "intro" : ""} ${loading ? "scanning" : ""} ${dragging ? "dragging" : ""}`}
-            onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={(e) => { e.preventDefault(); setDragging(false); uploadFile(e.dataTransfer.files[0]); }}
-            onMouseMove={onShelfMove}
-            onMouseLeave={() => setTilt(null)}
-          >
-            <div className="bookcase" style={tilt ? { "--rx": `${tilt.rx}deg`, "--ry": `${tilt.ry}deg` } : undefined}>
-              {documents.length === 0 && <p className="caption">The shelf is empty. Add a PDF to start.</p>}
-              {sections.map((section) => (
-                <div className="section" key={section.id}>
-                  <div className="spines">
-                    {section.docs.map((doc) => {
-                      const i = index++;
-                      const classes = [
-                        "spine",
-                        selected.includes(doc) ? "on" : "off",
-                        term && !doc.toLowerCase().includes(term) ? "dim" : "",
-                        cited.has(doc) ? "cited" : "",
-                      ].join(" ");
-                      return (
-                        <button
-                          key={doc}
-                          className={classes}
-                          style={{ "--h": `${spineHeight(doc)}px`, "--spine": section.color, "--i": i }}
-                          onClick={() => onSpineClick(doc)}
-                          onMouseEnter={() => setHovered(doc)}
-                          onMouseLeave={() => setHovered(null)}
-                          onFocus={() => setHovered(doc)}
-                          onBlur={() => setHovered(null)}
-                          aria-label={prettyName(doc)}
-                          aria-pressed={mode === "compare" ? selected.includes(doc) : undefined}
-                          title={prettyName(doc)}
-                        >
-                          <span>{prettyName(doc)}</span>
-                        </button>
-                      );
-                    })}
-                    {section.id === sections[sections.length - 1].id && (
-                      <button className="add-spine" onClick={() => fileInput.current?.click()} aria-label="Add a PDF to the shelf" title="Add a PDF">
-                        +
-                      </button>
+            <section className="panel shelf-wrap reveal" style={{ "--d": "160ms" }} aria-label="Paper shelf">
+              <div className="shelf-bar">
+                <div>
+                  <div className="scope" role="group" aria-label="Which papers">
+                    <button aria-pressed={scope === "library"} onClick={() => switchScope("library")}>
+                      Demo library <span>{libraryDocs.length}</span>
+                    </button>
+                    <button aria-pressed={scope === "mine"} onClick={() => switchScope("mine")}>
+                      My papers <span>{myDocs.length}</span>
+                    </button>
+                  </div>
+                  <p className="hint">{hint}</p>
+                </div>
+                <div className="shelf-tools">
+                  {scope === "library" && (
+                    <input
+                      className="filter"
+                      type="search"
+                      placeholder="Find a paper"
+                      value={filter}
+                      onChange={(e) => setFilter(e.target.value)}
+                      aria-label="Find a paper"
+                    />
+                  )}
+                  {mode === "compare" && scopeDocs.length > 0 && (
+                    <>
+                      <button className="text-btn" onClick={() => setSelected(scopeDocs)}>Pick all</button>
+                      <button className="text-btn" onClick={() => setSelected([])}>Clear</button>
+                    </>
+                  )}
+                  {UPLOADS_ON && (
+                    <button className="upload-btn" onClick={() => fileInput.current?.click()}>+ Upload PDF</button>
+                  )}
+                </div>
+              </div>
+
+              {scope === "mine" && myDocs.length === 0 ? (
+                <button
+                  className={`empty-shelf ${dragging ? "dragging" : ""}`}
+                  onClick={() => fileInput.current?.click()}
+                  disabled={!UPLOADS_ON}
+                  {...dropHandlers}
+                >
+                  <strong>Your shelf is empty</strong>
+                  {UPLOADS_ON ? "Drop a PDF here or click to upload. Ask and Compare will use only your papers." : "Uploads are turned off here."}
+                </button>
+              ) : (
+                <div
+                  className={`shelf ${intro ? "intro" : ""} ${loading ? "scanning" : ""} ${dragging ? "dragging" : ""}`}
+                  {...dropHandlers}
+                  onMouseMove={onShelfMove}
+                  onMouseLeave={() => setTilt(null)}
+                >
+                  <div className="bookcase" style={tilt ? { "--rx": `${tilt.rx}deg`, "--ry": `${tilt.ry}deg` } : undefined}>
+                    {sections.map((section) => (
+                      <div className="section" key={section.id}>
+                        <div className="spines">
+                          {section.docs.map((doc) => {
+                            const i = index++;
+                            const classes = [
+                              "spine",
+                              selected.includes(doc) ? "on" : "off",
+                              term && !doc.toLowerCase().includes(term) ? "dim" : "",
+                              cited.has(doc) ? "cited" : "",
+                            ].join(" ");
+                            return (
+                              <button
+                                key={doc}
+                                className={classes}
+                                style={{ "--h": `${spineHeight(doc)}px`, "--spine": section.color, "--i": i }}
+                                onClick={() => onSpineClick(doc)}
+                                onMouseEnter={() => setHovered(doc)}
+                                onMouseLeave={() => setHovered(null)}
+                                onFocus={() => setHovered(doc)}
+                                onBlur={() => setHovered(null)}
+                                aria-label={prettyName(doc)}
+                                aria-pressed={mode === "compare" ? selected.includes(doc) : undefined}
+                                title={prettyName(doc)}
+                              >
+                                <span>{prettyName(doc)}</span>
+                              </button>
+                            );
+                          })}
+                          {scope === "mine" && UPLOADS_ON && (
+                            <button className="add-spine" onClick={() => fileInput.current?.click()} aria-label="Upload a PDF" title="Upload a PDF">
+                              +
+                            </button>
+                          )}
+                        </div>
+                        <span className="section-name" style={{ "--dot": section.color }}>{section.name}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <input
+                ref={fileInput}
+                type="file"
+                accept=".pdf"
+                hidden
+                onChange={(e) => { uploadFile(e.target.files[0]); e.target.value = ""; }}
+              />
+              {!(scope === "mine" && myDocs.length === 0) && <p className="caption" aria-live="polite">{caption}</p>}
+              {uploadStatus.text && <p className={`status ${uploadStatus.kind}`}>{uploadStatus.text}</p>}
+            </section>
+
+            <main className="desk reveal" style={{ "--d": "260ms" }}>
+              {mode === "ask" && (
+                <div className="engine">
+                  <span className="label">Answer with</span>
+                  <div className="engine-opts" role="group" aria-label="Answer with">
+                    <button aria-pressed={engine === "gpt"} onClick={() => setEngine("gpt")}>GPT-4o-mini</button>
+                    <button
+                      aria-pressed={engine === "both"}
+                      onClick={() => setEngine("both")}
+                      disabled={!localReady && engine !== "both"}
+                      title={localReady ? "Ask GPT and the fine-tuned model, and compare" : "Start finetune/model_server.py to enable"}
+                    >
+                      GPT + my fine-tuned model
+                    </button>
+                  </div>
+                  <span className="engine-note">
+                    <span className={`dot ${localReady ? "on" : ""}`} aria-hidden="true" />
+                    {localReady ? "Fine-tuned model running on the local GPU" : "Fine-tuned model not running"}
+                  </span>
+                </div>
+              )}
+
+              <div className="ask-row">
+                <input
+                  ref={questionInput}
+                  className="question"
+                  type="text"
+                  value={question}
+                  maxLength={MAX_QUESTION_LENGTH}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && run()}
+                  placeholder={mode === "ask" ? "Ask anything about the papers…" : "What should the papers be compared on?"}
+                  aria-label="Question"
+                />
+                <button className="primary" onClick={() => run()} disabled={loading}>
+                  {loading ? "Reading…" : mode === "ask" ? "Ask" : "Compare"}
+                </button>
+              </div>
+
+              {scopeDocs.length > 0 && (
+                <div className="examples">
+                  <span className="label">Try</span>
+                  {examples.map((ex) => (
+                    <button key={ex} className="example" onClick={() => pickExample(ex)} disabled={loading}>
+                      {ex}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {loading && (
+                <section className="panel result" aria-live="polite">
+                  <div className="loading">
+                    <p>
+                      {mode === "ask" && engine === "both"
+                        ? "Asking GPT and the fine-tuned model the same question…"
+                        : mode === "ask"
+                        ? `Pulling the most relevant passages from ${scopeDocs.length} papers…`
+                        : `Reading the abstracts of ${selected.length} papers, then extracting facts…`}
+                    </p>
+                    <div className="bar" />
+                    <div className="bar" />
+                    <div className="bar" />
+                  </div>
+                </section>
+              )}
+
+              {!loading && result && (
+                <section className="panel result fresh" aria-live="polite">
+                  <div className="result-head">
+                    <span className="label">{result.isError ? "Something went wrong" : isCompareResult ? "Comparison" : "Answer"}</span>
+                    {!result.isError && (
+                      <button className="copy" onClick={copyAnswer}>{copied ? "Copied" : "Copy"}</button>
                     )}
                   </div>
-                  <span className="section-name" style={{ "--dot": section.color }}>{section.name}</span>
-                </div>
-              ))}
-              {documents.length === 0 && (
-                <button className="add-spine" onClick={() => fileInput.current?.click()} aria-label="Add a PDF to the shelf">+</button>
+                  <div className={`result-grid ${isCompareResult ? "wide" : ""}`}>
+                    <div className={`answer ${result.isError ? "error" : ""}`}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{mainText}</ReactMarkdown>
+                    </div>
+                    {result.sources.length > 0 && (
+                      <aside className="margin">
+                        <span className="label">{isCompareResult ? "Papers in the table" : "Sources"}</span>
+                        <ol>
+                          {result.sources.map((s, i) => (
+                            <li key={s} style={{ "--i": i }}>{prettyName(s)}</li>
+                          ))}
+                        </ol>
+                      </aside>
+                    )}
+                  </div>
+
+                  {result.both && <ModelCheck both={result.both} />}
+
+                  {notes && (
+                    <details className="notes">
+                      <summary>Why some papers aren't in the table</summary>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{notes}</ReactMarkdown>
+                    </details>
+                  )}
+                </section>
               )}
-            </div>
-          </div>
-          <input
-            ref={fileInput}
-            type="file"
-            accept=".pdf"
-            hidden
-            onChange={(e) => { uploadFile(e.target.files[0]); e.target.value = ""; }}
-          />
-          <p className="caption" aria-live="polite">{caption}</p>
-          {uploadStatus.text && <p className={`status ${uploadStatus.kind}`}>{uploadStatus.text}</p>}
-        </section>
-
-        <main className="desk reveal" style={{ "--d": "540ms" }}>
-          <div className={`modes ${mode}`} role="group" aria-label="Mode">
-            <button aria-pressed={mode === "ask"} onClick={() => setMode("ask")}>Ask</button>
-            <button aria-pressed={mode === "compare"} onClick={() => setMode("compare")}>Compare</button>
-          </div>
-          <p className="mode-note">
-            {mode === "ask"
-              ? "Get an answer from the papers, with the sources it came from."
-              : "Get one table comparing the picked papers. Takes about 10–20 seconds."}
-          </p>
-
-          <div className="ask-row">
-            <input
-              ref={questionInput}
-              className="question"
-              type="text"
-              value={question}
-              maxLength={MAX_QUESTION_LENGTH}
-              onChange={(e) => setQuestion(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && run()}
-              placeholder={mode === "ask" ? "Ask anything about the papers…" : "What should the papers be compared on?"}
-              aria-label="Question"
-            />
-            <button className="primary" onClick={() => run()} disabled={loading}>
-              {loading ? "Reading…" : mode === "ask" ? "Ask" : "Compare"}
-            </button>
-          </div>
-
-          <div className="examples">
-            <span className="label">Try</span>
-            {EXAMPLES[mode].map((ex) => (
-              <button key={ex} className="example" onClick={() => pickExample(ex)} disabled={loading}>
-                {ex}
-              </button>
-            ))}
-          </div>
-
-          {loading && (
-            <section className="panel result" aria-live="polite">
-              <div className="loading">
-                <p>
-                  {mode === "ask"
-                    ? `Pulling the most relevant passages from ${documents.length} papers…`
-                    : `Reading the abstracts of ${selected.length} papers, then extracting facts…`}
-                </p>
-                <div className="bar" />
-                <div className="bar" />
-                <div className="bar" />
-              </div>
-            </section>
-          )}
-
-          {!loading && result && (
-            <section className="panel result fresh" aria-live="polite">
-              <div className="result-head">
-                <span className="label">{result.isError ? "Something went wrong" : isCompareResult ? "Comparison" : "Answer"}</span>
-                {!result.isError && (
-                  <button className="copy" onClick={copyAnswer}>{copied ? "Copied" : "Copy"}</button>
-                )}
-              </div>
-              <div className={`result-grid ${isCompareResult ? "wide" : ""}`}>
-                <div className={`answer ${result.isError ? "error" : ""}`}>
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{mainText}</ReactMarkdown>
-                </div>
-                {result.sources.length > 0 && (
-                  <aside className="margin">
-                    <span className="label">{isCompareResult ? "Papers in the table" : "Sources"}</span>
-                    <ol>
-                      {result.sources.map((s, i) => (
-                        <li key={s} style={{ "--i": i }}>{prettyName(s)}</li>
-                      ))}
-                    </ol>
-                  </aside>
-                )}
-              </div>
-
-              {notes && (
-                <details className="notes">
-                  <summary>Why some papers aren't in the table</summary>
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{notes}</ReactMarkdown>
-                </details>
-              )}
-            </section>
-          )}
-        </main>
-
-        <section className="about" id="about" aria-labelledby="about-title">
-          <div className="about-head">
-            <p className="eyebrow">About</p>
-            <h2 id="about-title">A research assistant that <em>shows its sources</em></h2>
-            <p>
-              Study Assistant AI reads a library of research papers and answers questions from them, pointing to the exact
-              papers each answer came from. When the answer isn't in the papers, it says so instead of guessing. It was built
-              end to end, from PDF parsing to a fine-tuned local model, and every part is measured with its own benchmark.
-            </p>
-          </div>
-
-          <h3>How it works</h3>
-          <div className="how">
-            <article className="panel how-card">
-              <span className="num">01 / Ask</span>
-              <h4>Answers with citations</h4>
-              <p>Keyword and meaning-based search find the best passages, a reranker sorts them, and the model answers only from those passages and names the ones it used.</p>
-              <div className="flow">BM25 + vectors → cross-encoder → gpt-4o-mini</div>
-            </article>
-            <article className="panel how-card">
-              <span className="num">02 / Compare</span>
-              <h4>Many papers, one table</h4>
-              <p>The relevant papers are picked from their abstracts, facts are pulled from each paper in parallel, and everything is merged into a single table with notes on what was left out.</p>
-              <div className="flow">select → extract → reduce</div>
-            </article>
-            <article className="panel how-card">
-              <span className="num">03 / Fine-tune</span>
-              <h4>A local model that refuses to guess</h4>
-              <p>A 3B Llama model was fine-tuned with QLoRA on a 6 GB laptop GPU to answer from retrieved passages, cite them, and refuse when the answer isn't there.</p>
-              <div className="flow">Llama-3.2-3B · QLoRA · Unsloth</div>
-            </article>
-          </div>
-
-          <h3>Results</h3>
-          <div className="results">
-            <div className="panel metric"><b>30/30</b><span>Ask benchmark</span><small>right paper cited and right fact, plus 5/5 correct refusals</small></div>
-            <div className="panel metric"><b>1.00</b><span>Compare precision</span><small>no wrong papers in the table, 0.92 recall</small></div>
-            <div className="panel metric"><b>8%</b><span>Hallucination, local 3B</span><small>vs 26% for gpt-4o-mini on unseen papers</small></div>
-            <div className="panel metric"><b>85%</b><span>Citation accuracy</span><small>vs 81% for gpt-4o-mini</small></div>
-          </div>
-
-          <h3>Built with</h3>
-          <div className="stack">
-            {["Python", "FastAPI", "React", "ChromaDB", "sentence-transformers", "BM25", "Cross-encoder rerank", "OpenAI gpt-4o / 4o-mini", "Unsloth", "QLoRA", "Llama-3.2-3B"].map((t) => (
-              <span key={t}>{t}</span>
-            ))}
-          </div>
-
-          <h3>Built by</h3>
-          <div className="panel builder">
-            <div className="builder-who">
-              <div className="avatar" aria-hidden="true">PK</div>
-              <div>
-                <strong>Prerit Kumar</strong>
-                <p>Final-year Data Science student · building with LLMs, retrieval and fine-tuning</p>
-              </div>
-            </div>
-            <a className="gh" href={REPO_URL} target="_blank" rel="noreferrer"><GitHubIcon />View the code</a>
-          </div>
-        </section>
+            </main>
+          </>
+        )}
 
         <footer className="footer">
           <div>© 2026 Prerit Kumar</div>
-          <a href="#top">Back to top ↑</a>
+          <a href={REPO_URL} target="_blank" rel="noreferrer">Source on GitHub</a>
         </footer>
       </div>
     </>

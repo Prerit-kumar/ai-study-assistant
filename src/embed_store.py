@@ -1,12 +1,16 @@
 import os
 
 import chromadb
-from sentence_transformers import SentenceTransformer
 
 from chunker import chunk_text
-from pdf_reader import read_pdf
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
+# LIGHT_MODELS=1 (on Render) runs the same model on ONNX, without PyTorch, to fit in 512 MB.
+if os.getenv("LIGHT_MODELS") == "1":
+    from light_models import Embedder
+    model = Embedder()
+else:
+    from sentence_transformers import SentenceTransformer
+    model = SentenceTransformer("all-MiniLM-L6-v2")
 
 client = chromadb.PersistentClient(path="../chroma_db")
 collection = client.get_or_create_collection("documents")
@@ -48,6 +52,8 @@ def search(query, top_k=3):
 
 
 def process_all_pdfs(data_folder="../data"):
+    from pdf_reader import read_pdf
+
     pdf_files = sorted(
         f for f in os.listdir(data_folder) if f.lower().endswith(".pdf")
     )

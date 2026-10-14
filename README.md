@@ -11,6 +11,7 @@
 | Feature | How it works |
 |---|---|
 | **Ask** | Hybrid search (BM25 + vector) → cross-encoder rerank → answer from the top chunks. The model reports which chunks it used, so the **Sources** list shows only the papers actually cited. |
+| **Two-model check** | Optional, when running locally: the same passages go to gpt-4o-mini and to the fine-tuned Llama-3.2-3B on the local GPU. If GPT answers but the fine-tuned model finds nothing in the passages, the GPT answer is flagged as possibly unsupported. |
 | **Refusal** | If the papers don't contain the answer, it says *"I couldn't find this in the provided documents"* and returns **no sources**, instead of guessing. |
 | **Compare** | Ask one question across 2–50 papers and get a markdown table, one row per relevant paper, plus notes explaining which papers were left out and why. |
 | **Clear failures** | If an OpenAI call fails (no credits, rate limit), the user sees a plain message. Partial or silently incomplete tables are never shown. |
@@ -131,6 +132,30 @@ Five fixed questions over the 40-paper corpus, each with expected papers and num
 - **v1 looked good on its own easy test (8% hallucination) but hallucinates 34% of the time once the context contains realistic distractors.** It also never learned the citation format. Evaluating in conditions that match real use changed the conclusion.
 - The test set is small (100 + 50 questions), so differences of a few points are within noise. The hallucination and citation gaps are large enough to matter.
 
+### Using the fine-tuned model as a second opinion
+
+Because v2 rarely makes things up, the app can use it to check GPT. In **GPT + my fine-tuned model** mode, both models get the same five passages in parallel, and the backend compares their answers:
+
+| Outcome | What the app shows |
+|---|---|
+| Both answer and cite the same passage | ✓ Both models agree |
+| Both answer from different passages | Both answers, with a note to check the sources |
+| GPT answers, the fine-tuned model finds nothing | ⚠ GPT's answer is marked *unverified* |
+| GPT can't answer, the fine-tuned model can | The fine-tuned model's answer is shown as the best supported |
+| Neither finds it | Not found in the papers |
+
+Replaying the 150 benchmark questions (answers already saved, refusals detected from the text):
+
+| | Count |
+|---|---|
+| Unanswerable questions where GPT made up an answer | 10 of 50 |
+| ...of which the fine-tuned model refused, so the app flags GPT | **7 of 10** |
+| Answerable questions where GPT refused but the fine-tuned model answered | 6 of 100 |
+| Answerable questions where only the fine-tuned model refused (GPT flagged unnecessarily) | 5 of 100 |
+| Both answered and cited the same passage | 77 of 87 |
+
+So the check catches most of GPT's made-up answers, at the cost of an unnecessary warning on about 5% of answerable questions. It adds no API cost; the fine-tuned model answers in about 1.5 to 4 seconds on an RTX 3060 Laptop GPU, in parallel with GPT.
+
 The earlier v1-only benchmark (single-chunk contexts) is in `finetune/benchmark_results.json`.
 
 ---
@@ -138,7 +163,7 @@ The earlier v1-only benchmark (single-chunk contexts) is in `finetune/benchmark_
 ## Known limitations
 
 - **Small fine-tuning test set:** differences of a few percentage points may be noise.
-- **The fine-tuned model is not served by the app yet.** The app uses the OpenAI API; plugging in the local v2 model is the next step.
+- **The two-model check needs a local GPU.** It runs only when `finetune/model_server.py` is running; without it, the app uses GPT alone.
 - **Numbers that live in tables** can still be missed or attributed to the wrong model when retrieval doesn't surface the right chunk.
 - **The trap question doesn't pass every run.** The selector occasionally picks loosely related papers when nothing fits.
 - **Borderline papers are not always selected.** GPT-3, whose abstract is mostly about few-shot prompting, is sometimes skipped for questions about model size.
@@ -165,7 +190,8 @@ ai-study-assistant/
 │   ├── make_dataset_v2.py # fine-tuning dataset v2 (realistic retrieval contexts)
 │   ├── eval_judge.py      # LLM-as-judge for the v1 benchmark
 │   └── eval_judge_v2.py   # base vs v1 vs v2 vs gpt-4o-mini benchmark
-├── finetune/              # QLoRA training (train.py, train_v2.py) and generation scripts
+├── finetune/              # QLoRA training (train.py, train_v2.py), benchmark scripts,
+│                          # model_server.py: serves the fine-tuned model to the app
 └── frontend/              # React UI
 ```
 
@@ -201,6 +227,12 @@ ai-study-assistant/
    npm run dev
    ```
 6. Open http://localhost:5173
+7. *(Optional, needs an NVIDIA GPU with 6 GB)* To enable **GPT + my fine-tuned model**, start the fine-tuned model in a third terminal, using the fine-tuning environment:
+   ```bash
+   cd finetune
+   python model_server.py
+   ```
+   The green dot next to *Answer with* turns on when the backend can reach it.
 
 Run the comparison benchmark with `python compare_eval.py` from `src/`. Cached responses make repeat runs free. Set `LLM_CACHE=0` to force fresh calls.
 
@@ -208,7 +240,6 @@ Run the comparison benchmark with `python compare_eval.py` from `src/`. Cached r
 
 ## Roadmap
 
-- Serve the fine-tuned v2 model as a free, local option for Ask mode
 - Harder Ask-mode benchmark: questions that don't name the paper, table facts, multi-paper questions
 - Document filter in Ask mode and a summarization feature
 - Public deployment (backend on Hugging Face Spaces, frontend on Vercel)

@@ -6,12 +6,13 @@ from collections import defaultdict, deque
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
-from pdf_reader import read_pdf
 from chunker import chunk_text
 from embed_store import store_chunks
-from rag_pipeline import generate_answer
+from rag_pipeline import generate_answer, generate_answer_both, local_model_available
 from comparison import compare_documents_detailed, get_documents_in_store
 
 app = FastAPI(title="AI Study Assistant API")
@@ -95,6 +96,10 @@ def check_rate_limit(request: Request, action: str):
 class QuestionRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=2000)
     top_k: int = Field(8, ge=1, le=20)
+    # "both": also ask the fine-tuned local model and compare the two answers
+    mode: Literal["gpt", "both"] = "gpt"
+    # Only search these documents, e.g. just the user's own uploads (empty = all documents)
+    documents: list[str] = Field(default_factory=list, max_length=100)
 
 
 class CompareRequest(BaseModel):
@@ -122,6 +127,11 @@ def root():
 @app.post("/upload")
 async def upload_pdf(request: Request, file: UploadFile = File(...)):
     """Upload a PDF, check it, process it, and store it in the vector database."""
+    if os.getenv("ALLOW_UPLOADS", "1") != "1":
+        raise HTTPException(
+            status_code=403,
+            detail="Uploads are turned off in the live demo. Run the project locally to add your own PDFs.",
+        )
     check_rate_limit(request, "upload")
 
     filename = safe_pdf_name(file.filename)
@@ -155,6 +165,8 @@ async def upload_pdf(request: Request, file: UploadFile = File(...)):
         os.remove(save_path)
         raise HTTPException(status_code=400, detail="This file is not a valid PDF.")
 
+    from pdf_reader import read_pdf  # imported here so the server starts with less memory
+
     try:
         full_text = read_pdf(save_path)
     except Exception as e:
@@ -178,7 +190,13 @@ async def upload_pdf(request: Request, file: UploadFile = File(...)):
 def ask_question(body: QuestionRequest, request: Request):
     """Ask a question and get a grounded answer with sources."""
     check_rate_limit(request, "ask")
-    answer, sources = generate_answer(body.question, top_k=body.top_k)
+
+    if body.mode == "both":
+        both = generate_answer_both(body.question, sources=body.documents or None)
+        main = both["local"] if both["best"] == "local" else both["gpt"]
+        return {"answer": main["answer"], "sources": main["sources"], "both": both}
+
+    answer, sources = generate_answer(body.question, top_k=body.top_k, sources=body.documents or None)
 
     # If the model could not answer, retrieved documents are not real sources.
     normalized = answer.lower().replace("\u2019", "'")
@@ -198,6 +216,12 @@ def compare(body: CompareRequest, request: Request):
         "answer": result["answer"],
         "documents_compared": result["documents_used"],
     }
+
+
+@app.get("/local-model")
+def local_model_status():
+    """Whether the fine-tuned model server (finetune/model_server.py) is running."""
+    return {"available": local_model_available()}
 
 
 @app.get("/documents")
