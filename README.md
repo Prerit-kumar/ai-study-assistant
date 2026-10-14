@@ -6,12 +6,25 @@
 
 ---
 
+## Demo
+
+▶ **[Watch the 2.5-minute demo video](docs/demo_small.mp4)**: Ask with sources, the two-model check, Compare, and the About page.
+
+| Ask: papers on a shelf, grouped by topic | Answer: the cited paper glows on the shelf |
+|---|---|
+| ![Ask page](docs/ask.png) | ![Answer with sources](docs/answer.png) |
+| **Two-model check: both models agree it isn't in the papers** | **About page with the results** |
+| ![Two-model check](docs/two-models.png) | ![About page](docs/about.png) |
+
+---
+
 ## What it does
 
 | Feature | How it works |
 |---|---|
 | **Ask** | Hybrid search (BM25 + vector) → cross-encoder rerank → answer from the top chunks. The model reports which chunks it used, so the **Sources** list shows only the papers actually cited. |
 | **Two-model check** | Optional, when running locally: the same passages go to gpt-4o-mini and to the fine-tuned Llama-3.2-3B on the local GPU. If GPT answers but the fine-tuned model finds nothing in the passages, the GPT answer is flagged as possibly unsupported. |
+| **My papers** | Upload your own PDFs onto a separate shelf. Ask and Compare then search only your papers, not the demo library, and each file can be deleted from the shelf. |
 | **Refusal** | If the papers don't contain the answer, it says *"I couldn't find this in the provided documents"* and returns **no sources**, instead of guessing. |
 | **Compare** | Ask one question across 2–50 papers and get a markdown table, one row per relevant paper, plus notes explaining which papers were left out and why. |
 | **Clear failures** | If an OpenAI call fails (no credits, rate limit), the user sees a plain message. Partial or silently incomplete tables are never shown. |

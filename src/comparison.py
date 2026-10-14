@@ -180,6 +180,10 @@ Below are excerpts from each document. Use them to answer the question. You may 
 
 Report only facts about each document's own model or method, not the baselines it compares against. Report formulas, complexities and numbers exactly as they appear in the excerpts. Do not relabel or reinterpret them (for example, never call O(n log n) "linear").
 
+Only documents that directly address the question go in your answer and table (use each document's file name as written in its === Document: === line). A document that is about a different topic, or only mentions the topic in passing, must NOT get a row. List each such document at the very end, after a line containing only ---, in this format:
+*Not in the table: <file name> (<short reason>)*
+If every document is relevant, do not write the --- line.
+
 {context}
 
 Question: {question}
@@ -313,6 +317,13 @@ def compare_direct(query, retrieved):
     return _chat(CHAT_MODEL, prompt, temperature=0.2)
 
 
+def docs_in_answer(answer, docs):
+    """The documents the answer actually uses: those named in the answer before the --- notes line."""
+    main = answer.split("\n---\n")[0].lower()
+    used = [d for d in docs if d.lower() in main or re.sub(r"\.pdf$", "", d.lower()).replace("_", " ") in main.replace("_", " ")]
+    return used or list(docs)
+
+
 # ---------------------------------------------------------------- large sets
 
 def _match_name(name, lookup):
@@ -405,7 +416,8 @@ def _compare(query, documents, chunks_per_doc=None):
         retrieved = per_document_retrieval(query, documents, chunks_per_doc or DIRECT_CHUNKS_PER_DOC)
         if not retrieved:
             return {"answer": NOT_FOUND, "documents_used": []}
-        return {"answer": compare_direct(query, retrieved), "documents_used": list(retrieved.keys())}
+        answer = compare_direct(query, retrieved)
+        return {"answer": answer, "documents_used": docs_in_answer(answer, list(retrieved.keys()))}
 
     # Large sets: 1) select from abstracts  2) extract facts  3) build one table.
     loaded = {}
