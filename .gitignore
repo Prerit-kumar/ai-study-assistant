@@ -14,3 +14,4 @@ src/ask_eval_results.json
 model_cache/
 hf_space/
 docs/demo.mp4
+finetune_data_v3/

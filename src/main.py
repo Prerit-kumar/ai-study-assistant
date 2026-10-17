@@ -6,6 +6,7 @@ from collections import defaultdict, deque
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -100,6 +101,8 @@ class QuestionRequest(BaseModel):
     mode: Literal["gpt", "both"] = "gpt"
     # Only search these documents, e.g. just the user's own uploads (empty = all documents)
     documents: list[str] = Field(default_factory=list, max_length=100)
+    # True when the question is about the user's own uploads: the second opinion then uses adapter v3
+    own_files: bool = False
 
 
 class CompareRequest(BaseModel):
@@ -168,7 +171,8 @@ async def upload_pdf(request: Request, file: UploadFile = File(...)):
     from pdf_reader import read_pdf  # imported here so the server starts with less memory
 
     try:
-        full_text = read_pdf(save_path)
+        # OCR can take a while on scanned PDFs, so it runs in a worker thread and other requests aren't blocked.
+        full_text = await run_in_threadpool(read_pdf, save_path)
     except Exception as e:
         os.remove(save_path)
         print(f"[upload] could not read {filename}: {e}")
@@ -179,7 +183,7 @@ async def upload_pdf(request: Request, file: UploadFile = File(...)):
         os.remove(save_path)
         raise HTTPException(
             status_code=400,
-            detail="No readable text was found in this PDF (it may be a scanned image).",
+            detail="No readable text was found in this PDF, even with OCR. Try a clearer scan.",
         )
 
     stored = store_chunks(chunks, doc_id=filename)
@@ -192,7 +196,7 @@ def ask_question(body: QuestionRequest, request: Request):
     check_rate_limit(request, "ask")
 
     if body.mode == "both":
-        both = generate_answer_both(body.question, sources=body.documents or None)
+        both = generate_answer_both(body.question, sources=body.documents or None, own_files=body.own_files)
         main = both["local"] if both["best"] == "local" else both["gpt"]
         return {"answer": main["answer"], "sources": main["sources"], "both": both}
 

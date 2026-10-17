@@ -92,15 +92,16 @@ Answer:"""
     return answer, numbers, False
 
 
-def ask_local(query, results):
-    """Asks the fine-tuned model. Returns (answer, cited chunk numbers or None, seconds), or None if it isn't running."""
+def ask_local(query, results, adapter="v2"):
+    """Asks the fine-tuned model. Returns (answer, cited chunk numbers or None, seconds, adapter used),
+    or None if it isn't running. adapter: "v2" (research papers) or "v3" (everyday documents)."""
     messages = [
         {"role": "system", "content": LOCAL_SYSTEM_PROMPT},
         {"role": "user", "content": "Context:\n" + _context(results) + f"\n\nQuestion: {query}"},
     ]
     request = urllib.request.Request(
         f"{LOCAL_MODEL_URL}/generate",
-        data=json.dumps({"messages": messages}).encode("utf-8"),
+        data=json.dumps({"messages": messages, "adapter": adapter}).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
     try:
@@ -110,7 +111,7 @@ def ask_local(query, results):
         print(f"[ask] local model unavailable: {e}")
         return None
     answer, numbers = _split(data["answer"], results)
-    return answer, numbers, data.get("seconds")
+    return answer, numbers, data.get("seconds"), data.get("adapter", "v2")
 
 
 def local_model_available():
@@ -139,8 +140,11 @@ def generate_answer(query, top_k=5, sources=None):
     return answer, set(_sources(numbers, results))
 
 
-def generate_answer_both(query, sources=None):
+def generate_answer_both(query, sources=None, own_files=False):
     """Asks GPT and the fine-tuned model the same question with the same chunks, and compares them.
+
+    own_files: the question is about the user's own uploads. Then adapter v3 (trained on everyday
+    documents too) is used; for the research-paper library, adapter v2 (better on papers).
 
     Verdicts (the fine-tuned model hallucinated least in our benchmark, so it acts as a second opinion):
       agree             both answered and cited at least one same chunk
@@ -157,7 +161,7 @@ def generate_answer_both(query, sources=None):
     start = time.time()
     with ThreadPoolExecutor(max_workers=2) as pool:
         gpt_future = pool.submit(ask_gpt, query, results)
-        local_future = pool.submit(ask_local, query, results)
+        local_future = pool.submit(ask_local, query, results, "v3" if own_files else "v2")
         gpt_answer, gpt_numbers, gpt_failed = gpt_future.result()
         local = local_future.result()
 
@@ -171,13 +175,14 @@ def generate_answer_both(query, sources=None):
     if local is None:
         verdict, best, local_part = "local_unavailable", "gpt", None
     else:
-        local_answer, local_numbers, seconds = local
+        local_answer, local_numbers, seconds, adapter = local
         local_refused = is_refusal(local_answer)
         local_part = {
             "answer": local_answer,
             "sources": [] if local_refused else _sources(local_numbers, results),
             "refused": local_refused,
             "seconds": seconds,
+            "adapter": adapter,
         }
         if gpt_refused and local_refused:
             verdict, best = "not_found", None

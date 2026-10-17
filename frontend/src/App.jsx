@@ -585,8 +585,13 @@ function AnswerCard({ name, sub, part, best, flagged }) {
   );
 }
 
+// The backend uses adapter v2 (research papers) for the library and v3 (everyday documents) for the user's own files.
+const ADAPTER_LABELS = { v2: "QLoRA v2 · papers", v3: "QLoRA v3 · documents" };
+
 function ModelCheck({ both }) {
-  const verdict = VERDICTS[both.verdict] || VERDICTS.differ;
+  const key = both.verdict;
+  const verdict = VERDICTS[key] || VERDICTS.differ;
+  const adapterLabel = ADAPTER_LABELS[both.local?.adapter] || "QLoRA";
   const localSeconds = both.local?.seconds != null ? ` · ${both.local.seconds}s` : "";
   return (
     <div className="check">
@@ -598,8 +603,8 @@ function ModelCheck({ both }) {
         <details className="check-more">
           <summary>See both answers</summary>
           <div className="duo">
-            <AnswerCard name="GPT-4o-mini" sub="OpenAI API" part={both.gpt} best={both.best === "gpt"} flagged={both.verdict === "warning"} />
-            <AnswerCard name="Fine-tuned Llama-3.2-3B" sub={`QLoRA v2 · local GPU${localSeconds}`} part={both.local} best={both.best === "local"} flagged={false} />
+            <AnswerCard name="GPT-4o-mini" sub="OpenAI API" part={both.gpt} best={both.best === "gpt"} flagged={key === "warning"} />
+            <AnswerCard name="Fine-tuned Llama-3.2-3B" sub={`${adapterLabel} · local GPU${localSeconds}`} part={both.local} best={both.best === "local"} flagged={false} />
           </div>
         </details>
       )}
@@ -714,7 +719,7 @@ function App() {
       const endpoint = mode === "ask" ? "/ask" : "/compare";
       // Ask searches only the shelf that is open: the demo library or the user's own papers.
       const askDocs = scope === "mine" || myDocs.length > 0 ? scopeDocs : [];
-      const body = mode === "ask" ? { question: q, mode: engine, documents: askDocs } : { question: q, documents: picked };
+      const body = mode === "ask" ? { question: q, mode: engine, documents: askDocs, own_files: scope === "mine" } : { question: q, documents: picked };
       const response = await fetch(`${API}${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
